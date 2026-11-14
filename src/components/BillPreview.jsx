@@ -1,5 +1,9 @@
 import React, { useCallback, useEffect, useMemo } from 'react'
+import { ArrowLeft, Info, LayoutDashboard, Printer } from 'lucide-react'
 import logo from '../assets/logo.png'
+import TopBar from './TopBar.jsx'
+import { useDarkMode } from '../lib/theme.js'
+import { ui } from '../lib/ui.js'
 
 const formatCurrency = (value) => {
   return new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 2 }).format(value)
@@ -27,6 +31,7 @@ const formatDT = (value) => {
 }
 
 const BillPreview = ({ data, onBack, onPrint, onDashboard, autoPrint = false, saveError }) => {
+  const [darkMode, setDarkMode] = useDarkMode()
   const lab = data?.lab || {}
   const meta = data?.meta || {}
   const patient = data?.patient || {}
@@ -421,18 +426,34 @@ const BillPreview = ({ data, onBack, onPrint, onDashboard, autoPrint = false, sa
     handlePrint()
   }, [autoPrint, handlePrint])
 
+  const printBill = () => (onPrint ? onPrint() : handlePrint())
+
   return (
-    <div className="min-h-screen bg-gradient-to-br from-gray-100 to-gray-200 p-4 md:p-6">
-      <div className="max-w-4xl mx-auto">
-        {/* Top page header removed as requested */}
+    <div className={ui.page}>
+      <TopBar section="Bill preview" darkMode={darkMode} onToggleTheme={() => setDarkMode((v) => !v)}>
+        <button type="button" onClick={onBack} className={ui.btn}>
+          <ArrowLeft className="h-4 w-4" />
+          <span className="hidden sm:inline">Edit bill</span>
+        </button>
+        <button type="button" onClick={onDashboard} className={ui.btn}>
+          <LayoutDashboard className="h-4 w-4" />
+          <span className="hidden sm:inline">Dashboard</span>
+        </button>
+        <button type="button" onClick={printBill} className={ui.btnPrimary}>
+          <Printer className="h-4 w-4" />
+          Print
+        </button>
+      </TopBar>
+
+      <div className="mx-auto max-w-4xl p-4 md:p-6">
         {saveError ? (
-          <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+          <div className={`${ui.alertWarn} mb-4`}>
             This bill is showing in preview, but it was not saved to the dashboard: {saveError}
           </div>
         ) : null}
 
-        {/* Bill Container - Matching Image Style */}
-        <div className="bg-white rounded-2xl shadow-2xl overflow-hidden border border-gray-300">
+        {/* Bill Container - the receipt always stays white like the printed paper */}
+        <div className="overflow-hidden rounded-2xl border border-gray-300 bg-white text-gray-900 shadow-xl dark:border-slate-700 dark:shadow-black/40">
           <div className="border-b border-gray-300 p-4 bg-gradient-to-r from-red-50 to-white">
             <div className="flex items-center">
               {logoSrc ? <img src={logoSrc} alt="Logo" className="w-24 h-24 object-contain mr-4" /> : null}
@@ -614,56 +635,11 @@ const BillPreview = ({ data, onBack, onPrint, onDashboard, autoPrint = false, sa
             </div>
           </div>
 
-          {/* Action Buttons */}
-          <div className="p-4 bg-gray-100 border-t border-gray-300 flex justify-between">
-            <div className="flex gap-3">
-              <button
-                onClick={onBack}
-                className="px-5 py-2 bg-gray-300 hover:bg-gray-400 text-gray-800 rounded font-medium flex items-center transition-colors"
-              >
-                <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 19l-7-7m0 0l7-7m-7 7h18" />
-                </svg>
-                Edit Bill
-              </button>
-              <button
-                onClick={onDashboard}
-                className="px-5 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded font-medium flex items-center transition-colors"
-              >
-                <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 13h8V3H3v10zm0 8h8v-6H3v6zm10 0h8V11h-8v10zm0-18v6h8V3h-8z" />
-                </svg>
-                Dashboard
-              </button>
-            </div>
-            <button
-              onClick={() => (onPrint ? onPrint() : handlePrint())}
-              className="px-6 py-2 bg-red-600 hover:bg-red-700 text-white rounded font-medium flex items-center transition-colors"
-            >
-              <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z" />
-              </svg>
-              Print Bill
-            </button>
-          </div>
         </div>
 
-        {/* Preview Instructions */}
-        <div className="mt-6 p-4 bg-blue-50 border border-blue-200 rounded-lg text-sm text-blue-800">
-          <div className="flex items-center">
-            <svg className="w-5 h-5 mr-2" fill="currentColor" viewBox="0 0 20 20">
-              <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clipRule="evenodd" />
-            </svg>
-            <div>
-              <div className="font-bold mb-1">Print Instructions:</div>
-              <ul className="list-disc pl-5 space-y-1">
-                <li>Click "Print Bill" to open a printer-friendly version</li>
-                <li>The print layout matches the exact format of your sample image</li>
-                <li>Use Ctrl+P (Windows) or Cmd+P (Mac) for additional print options</li>
-                <li>For best results, print in portrait mode</li>
-              </ul>
-            </div>
-          </div>
+        <div className={`mt-4 flex items-start gap-2 text-sm ${ui.muted}`}>
+          <Info className="mt-0.5 h-4 w-4 shrink-0" />
+          <p>The printout uses the same layout as this receipt. Print in portrait mode; use Ctrl+P for more printer options.</p>
         </div>
       </div>
     </div>

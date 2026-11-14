@@ -4,9 +4,9 @@ import BillPreview from './components/BillPreview.jsx'
 import Dashboard from './pages/Dashboard.jsx'
 import Login from './pages/Login.jsx'
 import ResetPassword from './pages/ResetPassword.jsx'
+import { API_BASE, api, authFetch, clearSession, getStoredUser, getToken, onUnauthorized, saveSession } from './lib/api.js'
 
-const API_BASE = String(import.meta.env.VITE_API_BASE || 'http://localhost:5000/api').replace(/\/+$/, '')
-const AUTH_KEY = 'billing_auth'
+const PUBLIC_VIEWS = ['login', 'reset-password']
 
 const getViewFromPath = () => {
   if (window.location.pathname === '/login') return 'login'
@@ -26,9 +26,12 @@ const App = () => {
   const [view, setView] = useState(getViewFromPath)
   const [billData, setBillData] = useState(null)
   const [saveError, setSaveError] = useState('')
-  const [isAuthenticated, setIsAuthenticated] = useState(() => localStorage.getItem(AUTH_KEY) === 'true')
+  const [user, setUser] = useState(() => (getToken() ? getStoredUser() : null))
   const [autoPrintPreview, setAutoPrintPreview] = useState(false)
   const [previewReturnView, setPreviewReturnView] = useState('create')
+  const [afterLoginView, setAfterLoginView] = useState('dashboard')
+  const [prefillPatient, setPrefillPatient] = useState(null)
+  const isAuthenticated = Boolean(user)
 
   useEffect(() => {
     const handlePopState = () => setView(getViewFromPath())
@@ -36,8 +39,27 @@ const App = () => {
     return () => window.removeEventListener('popstate', handlePopState)
   }, [])
 
+  // Any 401 from the API (expired/revoked session) -> back to login.
   useEffect(() => {
-    if (view === 'dashboard' && !isAuthenticated) {
+    onUnauthorized(() => setUser(null))
+    return () => onUnauthorized(null)
+  }, [])
+
+  // Refresh the logged-in user (role/name may have changed) when the app opens.
+  useEffect(() => {
+    if (!getToken()) return
+    api('/auth/me')
+      .then(({ user: fresh }) => {
+        setUser(fresh)
+        saveSession(getToken(), fresh)
+      })
+      .catch(() => {})
+  }, [])
+
+  // Every page except login / reset needs a login.
+  useEffect(() => {
+    if (!isAuthenticated && !PUBLIC_VIEWS.includes(view)) {
+      setAfterLoginView(view === 'create' ? 'create' : 'dashboard')
       setPathForView('login')
       setView('login')
     }
@@ -54,7 +76,7 @@ const App = () => {
     setPreviewReturnView('create')
 
     try {
-      const response = await fetch(`${API_BASE}/bills`, {
+      const response = await authFetch(`${API_BASE}/bills`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data),
@@ -83,7 +105,11 @@ const App = () => {
     setAutoPrintPreview(false)
     goToView(isAuthenticated ? 'dashboard' : 'login')
   }
-  const handleCreate = () => goToView('create')
+  // Called from buttons (gets a click event) or from a patient profile (gets the patient).
+  const handleCreate = (patient) => {
+    setPrefillPatient(patient?.patientId ? patient : null)
+    goToView('create')
+  }
   const handlePrintSavedBill = (bill) => {
     setSaveError('')
     setBillData(bill)
@@ -91,14 +117,19 @@ const App = () => {
     setAutoPrintPreview(true)
     goToView('preview')
   }
-  const handleLogin = () => {
-    localStorage.setItem(AUTH_KEY, 'true')
-    setIsAuthenticated(true)
-    goToView('dashboard')
+  const handleLogin = ({ token, user: loggedIn }) => {
+    saveSession(token, loggedIn)
+    setUser(loggedIn)
+    goToView(afterLoginView)
   }
-  const handleLogout = () => {
-    localStorage.removeItem(AUTH_KEY)
-    setIsAuthenticated(false)
+  const handleLogout = async () => {
+    try {
+      await api('/auth/logout', { method: 'POST' })
+    } catch {
+      // session may already be gone
+    }
+    clearSession()
+    setUser(null)
     goToView('login')
   }
 
@@ -110,8 +141,10 @@ const App = () => {
     return <ResetPassword apiBase={API_BASE} onGoToLogin={() => goToView('login')} />
   }
 
+  if (!isAuthenticated) return null
+
   if (view === 'dashboard') {
-    return <Dashboard apiBase={API_BASE} onCreateBill={handleCreate} onLogout={handleLogout} onPrintBill={handlePrintSavedBill} />
+    return <Dashboard apiBase={API_BASE} user={user} onCreateBill={handleCreate} onLogout={handleLogout} onPrintBill={handlePrintSavedBill} />
   }
 
   if (view === 'preview') {
@@ -126,7 +159,7 @@ const App = () => {
     )
   }
 
-  return <CreateBill onSubmit={handleSubmit} onDashboard={handleDashboard} />
+  return <CreateBill key={prefillPatient?.patientId || 'new'} initialPatient={prefillPatient} onSubmit={handleSubmit} onDashboard={handleDashboard} />
 }
 
 export default App

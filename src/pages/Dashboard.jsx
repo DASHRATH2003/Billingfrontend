@@ -1,25 +1,56 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react'
 import {
-  Activity,
+  Accessibility,
   AlertCircle,
   Banknote,
   CalendarDays,
+  ChevronDown,
+  ClipboardList,
   Check,
   FileText,
+  FlaskConical,
+  Gauge,
   IndianRupee,
+  LayoutDashboard,
+  List,
   LogOut,
   Moon,
   Pencil,
   Plus,
   Printer,
+  ReceiptText,
   RefreshCw,
   Search,
+  Shuffle,
+  SlidersHorizontal,
   Sun,
   TestTube2,
+  UserCog,
   Trash2,
   Users,
+  Wallet,
 } from 'lucide-react'
-import { TESTS_STORAGE_KEY, getDefaultPathologyTests, getPathologyTests, resetPathologyTests, savePathologyTests } from '../data/pathologyTests.js'
+import logo from '../assets/logo.png'
+import Panel from '../components/Panel.jsx'
+import { authFetch } from '../lib/api.js'
+import PatientReport from './PatientReport.jsx'
+import PatientsPage from './PatientsPage.jsx'
+import UsersPage from './UsersPage.jsx'
+import TestEntry from './TestEntry.jsx'
+import TestList from './TestList.jsx'
+import TestProfile from './TestProfile.jsx'
+import ProfileSetting from './ProfileSetting.jsx'
+import PatientReg from './PatientReg.jsx'
+import TestRequestList from './TestRequestList.jsx'
+import PrintList from './PrintList.jsx'
+import ResultEntry from './ResultEntry.jsx'
+import { TESTS_STORAGE_KEY, getDefaultPathologyTests, getPathologyTests, savePathologyTests } from '../data/pathologyTests.js'
+import { useDarkMode } from '../lib/theme.js'
+import { ACCENTS, LAB_NAME, ui } from '../lib/ui.js'
+
+/* ------------------------------------------------------------------ */
+/* Helpers                                                             */
+/* ------------------------------------------------------------------ */
 
 const formatCurrency = (value) =>
   new Intl.NumberFormat('en-IN', {
@@ -27,6 +58,14 @@ const formatCurrency = (value) =>
     currency: 'INR',
     maximumFractionDigits: 0,
   }).format(Number(value) || 0)
+
+const formatCompactCurrency = (value) => {
+  const n = Number(value) || 0
+  if (n >= 10000000) return `₹${(n / 10000000).toFixed(1)}Cr`
+  if (n >= 100000) return `₹${(n / 100000).toFixed(1)}L`
+  if (n >= 1000) return `₹${(n / 1000).toFixed(1)}k`
+  return `₹${Math.round(n)}`
+}
 
 const formatDate = (value) => {
   if (!value) return 'No date'
@@ -42,31 +81,11 @@ const formatDate = (value) => {
   }).format(date)
 }
 
-const THEME_KEY = 'billing_theme'
-
-const getInitialDarkMode = () => {
-  const saved = localStorage.getItem(THEME_KEY)
-  if (saved === 'dark') return true
-  if (saved === 'light') return false
-  return window.matchMedia?.('(prefers-color-scheme: dark)')?.matches ?? false
-}
-
-const StatCard = ({ icon, label, value, tone }) => {
-  const CardIcon = icon
-
-  return (
-    <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900">
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <p className="text-sm font-medium text-gray-500 dark:text-slate-400">{label}</p>
-          <p className="mt-2 text-2xl font-bold text-gray-900 dark:text-slate-100">{value}</p>
-        </div>
-        <div className={`rounded-lg p-2 ${tone}`}>
-          <CardIcon className="h-5 w-5" />
-        </div>
-      </div>
-    </div>
-  )
+const toInputDate = (date) => {
+  const yyyy = date.getFullYear()
+  const mm = String(date.getMonth() + 1).padStart(2, '0')
+  const dd = String(date.getDate()).padStart(2, '0')
+  return `${yyyy}-${mm}-${dd}`
 }
 
 const getBillDate = (bill) => {
@@ -91,12 +110,273 @@ const buildPatientKey = (patient = {}) => {
   return String(patient.name || '').trim().toLowerCase()
 }
 
-const Dashboard = ({ apiBase, onLogout, onCreateBill, onPrintBill }) => {
-  const [activeTab, setActiveTab] = useState('overview')
-  const [darkMode, setDarkMode] = useState(getInitialDarkMode)
+const matchesBillQuery = (bill, query) => {
+  if (!query) return true
+  const patient = bill.patient || {}
+  return [bill.id, patient.name, patient.mobile, patient.refBy]
+    .filter(Boolean)
+    .some((value) => String(value).toLowerCase().includes(query))
+}
+
+const sumBills = (bills) =>
+  bills.reduce(
+    (acc, bill) => {
+      acc.net += Number(bill.netAmount) || 0
+      acc.received += Number(bill.receivedAmt) || 0
+      acc.dues += Number(bill.duesAmt) || 0
+      return acc
+    },
+    { net: 0, received: 0, dues: 0 },
+  )
+
+
+/* ------------------------------------------------------------------ */
+/* Small components                                                    */
+/* ------------------------------------------------------------------ */
+
+const StatCard = ({ icon, label, value, hint, accent = 'blue', loading }) => {
+  const Icon = icon
+  return (
+  <div className={`${ui.card} p-5`}>
+    <div className="flex items-center justify-between gap-3">
+      <p className={`text-sm font-medium ${ui.muted}`}>{label}</p>
+      <span className={`rounded-xl p-2 ${ACCENTS[accent]}`}>
+        <Icon className="h-4 w-4" />
+      </span>
+    </div>
+    {loading ? (
+      <div className="mt-3 h-8 w-28 animate-pulse rounded-md bg-slate-100 dark:bg-slate-800" />
+    ) : (
+      <p className="mt-3 text-2xl font-bold tracking-tight text-slate-900 tabular-nums dark:text-slate-50">{value}</p>
+    )}
+    {hint ? <p className={`mt-1 text-xs ${ui.muted}`}>{hint}</p> : null}
+  </div>
+  )
+}
+
+const SearchBox = ({ value, onChange, placeholder, className = 'w-full md:w-72' }) => (
+  <div className={`relative ${className}`}>
+    <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+    <input className={`${ui.input} pl-9`} placeholder={placeholder} value={value} onChange={(event) => onChange(event.target.value)} />
+  </div>
+)
+
+const StatusPill = ({ dues }) => {
+  const amount = Number(dues) || 0
+  return amount > 0 ? (
+    <span className="inline-flex items-center rounded-full bg-rose-50 px-2.5 py-0.5 text-xs font-semibold text-rose-700 ring-1 ring-inset ring-rose-200 dark:bg-rose-500/10 dark:text-rose-300 dark:ring-rose-500/30">
+      Due {formatCurrency(amount)}
+    </span>
+  ) : (
+    <span className="inline-flex items-center rounded-full bg-emerald-50 px-2.5 py-0.5 text-xs font-semibold text-emerald-700 ring-1 ring-inset ring-emerald-200 dark:bg-emerald-500/10 dark:text-emerald-300 dark:ring-emerald-500/30">
+      Paid
+    </span>
+  )
+}
+
+const EmptyRow = ({ colSpan, children }) => (
+  <tr>
+    <td colSpan={colSpan} className={`px-4 py-12 text-center text-sm ${ui.muted}`}>
+      {children}
+    </td>
+  </tr>
+)
+
+const BillsTable = ({ bills, loading, onPrint, showTests = true, emptyText = 'No bills found.' }) => {
+  const colSpan = 6 + (showTests ? 1 : 0) + (onPrint ? 1 : 0)
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full min-w-[860px] text-left">
+        <thead className="bg-slate-50 dark:bg-slate-800/50">
+          <tr>
+            <th className={ui.th}>Bill</th>
+            <th className={ui.th}>Patient</th>
+            {showTests ? <th className={`${ui.th} text-center`}>Tests</th> : null}
+            <th className={`${ui.th} text-right`}>Net</th>
+            <th className={`${ui.th} text-right`}>Received</th>
+            <th className={ui.th}>Status</th>
+            <th className={ui.th}>Date</th>
+            {onPrint ? <th className={`${ui.th} text-right`}>Action</th> : null}
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+          {bills.length ? (
+            bills.map((bill) => (
+              <tr key={bill.id} className="transition-colors hover:bg-slate-50 dark:hover:bg-slate-800/40">
+                <td className={`${ui.td} font-mono text-xs font-semibold text-slate-700 dark:text-slate-300`}>{bill.id}</td>
+                <td className={ui.td}>
+                  <div className="font-medium text-slate-900 dark:text-slate-100">{bill.patient?.name || 'Unnamed'}</div>
+                  <div className={`text-xs ${ui.muted}`}>
+                    {bill.patient?.mobile || 'No mobile'}
+                    {bill.patient?.refBy ? ` · Ref: ${bill.patient.refBy}` : ''}
+                  </div>
+                </td>
+                {showTests ? (
+                  <td className={`${ui.td} text-center text-slate-700 dark:text-slate-300`}>{Array.isArray(bill.items) ? bill.items.length : 0}</td>
+                ) : null}
+                <td className={`${ui.td} text-right font-semibold tabular-nums text-slate-900 dark:text-slate-100`}>{formatCurrency(bill.netAmount)}</td>
+                <td className={`${ui.td} text-right tabular-nums text-slate-700 dark:text-slate-300`}>{formatCurrency(bill.receivedAmt)}</td>
+                <td className={ui.td}>
+                  <StatusPill dues={bill.duesAmt} />
+                </td>
+                <td className={`${ui.td} whitespace-nowrap ${ui.muted}`}>{formatDate(bill.meta?.billingDateTime || bill.createdAt)}</td>
+                {onPrint ? (
+                  <td className={ui.td}>
+                    <div className="flex justify-end">
+                      <button type="button" onClick={() => onPrint(bill)} className={`${ui.btn} px-2.5 py-1.5`} title="Print bill">
+                        <Printer className="h-4 w-4" />
+                        Print
+                      </button>
+                    </div>
+                  </td>
+                ) : null}
+              </tr>
+            ))
+          ) : (
+            <EmptyRow colSpan={colSpan}>{loading ? 'Loading bills…' : emptyText}</EmptyRow>
+          )}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
+/** Vertical bar chart for the last 7 days. Days without bills are shown as zero. */
+const RevenueChart = ({ rows }) => {
+  const days = useMemo(() => {
+    const byDate = new Map(rows.map((row) => [row.date, row]))
+    const today = new Date()
+    return Array.from({ length: 7 }, (_, i) => {
+      const date = new Date(today.getFullYear(), today.getMonth(), today.getDate() - (6 - i))
+      const key = toInputDate(date)
+      const row = byDate.get(key)
+      return {
+        key,
+        label: new Intl.DateTimeFormat('en-IN', { weekday: 'short' }).format(date),
+        dayNum: date.getDate(),
+        amount: Number(row?.amount) || 0,
+        bills: Number(row?.bills) || 0,
+        isToday: i === 6,
+      }
+    })
+  }, [rows])
+
+  const max = Math.max(...days.map((d) => d.amount), 1)
+
+  return (
+    <div className="flex h-56 items-end gap-2 sm:gap-4">
+      {days.map((day) => (
+        <div key={day.key} className="group flex h-full flex-1 flex-col items-center justify-end gap-2">
+          <span className="text-[11px] font-semibold tabular-nums text-slate-600 dark:text-slate-300">
+            {day.amount ? formatCompactCurrency(day.amount) : ''}
+          </span>
+          <div className="flex w-full flex-1 items-end justify-center">
+            <div
+              title={`${day.key}: ${formatCurrency(day.amount)} · ${day.bills} bill${day.bills === 1 ? '' : 's'}`}
+              className={`w-full max-w-[44px] rounded-t-md transition-all group-hover:opacity-80 ${
+                day.isToday ? 'bg-blue-600 dark:bg-blue-500' : 'bg-blue-200 dark:bg-blue-900'
+              }`}
+              style={{ height: `${day.amount ? Math.max(4, (day.amount / max) * 100) : 1.5}%` }}
+            />
+          </div>
+          <div className="text-center leading-tight">
+            <div className={`text-xs font-medium ${day.isToday ? 'text-blue-600 dark:text-blue-400' : 'text-slate-600 dark:text-slate-300'}`}>{day.label}</div>
+            <div className="text-[11px] text-slate-400">{day.dayNum}</div>
+          </div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+/** Sidebar menu. An entry is a page ({ key }) or a group ({ group, children }) that opens and closes. */
+const MENU = [
+  { key: 'overview', label: 'Overview', title: 'Overview', subtitle: 'Today at a glance, revenue trend and latest bills.', icon: LayoutDashboard },
+  { key: 'dashboard', label: 'Dashboard', title: 'Dashboard', subtitle: 'List of test requests — click a patient to see tests and print the receipt.', icon: Gauge },
+  { key: 'report', label: 'Registration Report', title: 'Registration Report', subtitle: 'Patients registered in a date range, with amount, paid, discount and dues.', icon: ClipboardList },
+  { key: 'receipts', label: 'Patient Receipt', title: 'Patient Receipt', subtitle: 'The money slip — tests, prices, paid and dues. Find a patient and print the receipt.', icon: Printer },
+  { key: 'lab-report', label: 'Patient Report', title: 'Patient Report', subtitle: 'Test results for the patient (blood, urine …). Enter results, then print the report.', icon: FileText },
+  { key: 'history', label: 'Billing History', title: 'Billing History', subtitle: 'Search, review and reprint saved bills.', icon: ReceiptText },
+  {
+    group: 'patient',
+    label: 'Patient',
+    icon: Accessibility,
+    children: [
+      { key: 'patient-reg', label: 'Patient Reg.', title: 'Patient Registration', subtitle: 'Register a patient, add tests or profiles, take payment and print the receipt.', icon: Plus },
+      { key: 'patients', label: 'Patient List', title: 'Patient List', subtitle: 'Every patient with visit history.', icon: List },
+    ],
+  },
+  { key: 'payments', label: 'Payment Report', title: 'Payment Report', subtitle: 'Collections and dues for any date range.', icon: Wallet },
+  {
+    group: 'test',
+    label: 'Test',
+    icon: TestTube2,
+    adminOnly: true,
+    children: [
+      { key: 'test-entry', label: 'Test Entry', title: 'Test Entry', subtitle: 'Add a new test with its price.', icon: FlaskConical },
+      { key: 'tests', label: 'Test List', title: 'Test List', subtitle: 'All tests and the prices used when billing.', icon: List },
+      { key: 'test-profile', label: 'Test Profile', title: 'Test Profile', subtitle: 'Group several tests into one profile or package.', icon: Shuffle },
+      { key: 'profile-setting', label: 'Profile Setting', title: 'Profile Setting', subtitle: 'Parameters, units and normal ranges for each test report.', icon: SlidersHorizontal },
+    ],
+  },
+  { key: 'users', label: 'Users', title: 'Users & Roles', subtitle: 'Staff logins and who can do what.', icon: UserCog, adminOnly: true },
+]
+
+const SidebarLink = ({ item, active, onSelect, small = false }) => {
+  const Icon = item.icon
+  return (
+    <button
+      type="button"
+      onClick={() => onSelect(item.key)}
+      aria-current={active ? 'page' : undefined}
+      className={`relative flex w-full items-center gap-3 rounded-lg px-3 text-left transition-colors ${small ? 'py-2 text-[13px]' : 'py-2.5 text-sm'} ${
+        active
+          ? 'bg-blue-50 font-semibold text-blue-700 dark:bg-blue-500/10 dark:text-blue-300'
+          : 'font-medium text-slate-600 hover:bg-slate-100 hover:text-slate-900 dark:text-slate-300 dark:hover:bg-slate-800 dark:hover:text-slate-100'
+      }`}
+    >
+      {active && !small ? <span className="absolute inset-y-2 left-0 w-1 rounded-r bg-blue-600 dark:bg-blue-400" /> : null}
+      <Icon className={small ? 'h-3.5 w-3.5' : 'h-4 w-4'} />
+      {item.label}
+    </button>
+  )
+}
+
+/** Tabs that manage their own data (they don't need the bill list loaded). */
+const NON_BILL_TABS = ['dashboard', 'receipts', 'lab-report','tests', 'test-entry', 'test-profile', 'profile-setting', 'report', 'patients', 'patient-reg', 'users']
+
+/** All pages in menu order, flattened (group children inherit adminOnly). */
+const NAV_ITEMS = MENU.flatMap((entry) => (entry.children ? entry.children.map((c) => ({ ...c, adminOnly: entry.adminOnly })) : [entry]))
+
+/* ------------------------------------------------------------------ */
+/* Dashboard                                                           */
+/* ------------------------------------------------------------------ */
+
+const Dashboard = ({ apiBase, user, onLogout, onCreateBill, onPrintBill }) => {
+  const isAdmin = user?.role === 'admin'
+  const navItems = NAV_ITEMS.filter((item) => !item.adminOnly || isAdmin)
+  const menu = MENU.filter((entry) => !entry.adminOnly || isAdmin)
+  const [openGroups, setOpenGroups] = useState([])
+  const [activeTab, setActiveTabState] = useState(() => {
+    try {
+      return sessionStorage.getItem('billing_tab') || 'overview'
+    } catch {
+      return 'overview'
+    }
+  })
+  const setActiveTab = (tab) => {
+    setActiveTabState(tab)
+    try {
+      sessionStorage.setItem('billing_tab', tab)
+    } catch {
+      // ignore
+    }
+  }
+  const [darkMode, setDarkMode] = useDarkMode()
   const [stats, setStats] = useState(null)
   const [recentBills, setRecentBills] = useState([])
   const [recentSearch, setRecentSearch] = useState('')
+  const [reportRefreshKey, setReportRefreshKey] = useState(0)
   const [overviewLoading, setOverviewLoading] = useState(true)
   const [overviewError, setOverviewError] = useState('')
 
@@ -105,28 +385,21 @@ const Dashboard = ({ apiBase, onLogout, onCreateBill, onPrintBill }) => {
   const [allBillsError, setAllBillsError] = useState('')
 
   const [historySearch, setHistorySearch] = useState('')
-  const [patientSearch, setPatientSearch] = useState('')
   const [paymentSearch, setPaymentSearch] = useState('')
   const [paymentFrom, setPaymentFrom] = useState('')
   const [paymentTo, setPaymentTo] = useState('')
-  const [testsSearch, setTestsSearch] = useState('')
-  const [testsDraft, setTestsDraft] = useState([])
-  const [testsDirty, setTestsDirty] = useState(false)
-  const [editingTestIndex, setEditingTestIndex] = useState(null)
-  const [editingTestAmount, setEditingTestAmount] = useState('')
-  const [newTestName, setNewTestName] = useState('')
-  const [newTestAmount, setNewTestAmount] = useState('')
-  const [newTestError, setNewTestError] = useState('')
+  const [editTestId, setEditTestId] = useState(null)
+  const [editBill, setEditBill] = useState(null) // Dashboard → Edit Registration
+  const [resultBillId, setResultBillId] = useState(null) // Result Entry (full screen)
+  const [testsRefreshKey, setTestsRefreshKey] = useState(0)
+  // Menu clicks: "Test Entry" / "Patient Reg." from the menu always open an empty form.
+  const selectTab = (key) => {
+    if (key === 'test-entry') setEditTestId(null)
+    if (key === 'patient-reg') setEditBill(null)
+    setActiveTab(key)
+  }
 
-  useEffect(() => {
-    const root = document.documentElement
-    if (darkMode) {
-      root.classList.add('dark')
-    } else {
-      root.classList.remove('dark')
-    }
-    localStorage.setItem(THEME_KEY, darkMode ? 'dark' : 'light')
-  }, [darkMode])
+  /* ---------------- data loading ---------------- */
 
   const loadOverview = useCallback(async () => {
     setOverviewLoading(true)
@@ -134,8 +407,8 @@ const Dashboard = ({ apiBase, onLogout, onCreateBill, onPrintBill }) => {
 
     try {
       const [statsResponse, billsResponse] = await Promise.all([
-        fetch(`${apiBase}/bills/dashboard`),
-        fetch(`${apiBase}/bills?limit=8`),
+        authFetch(`${apiBase}/bills/dashboard`),
+        authFetch(`${apiBase}/bills?limit=8`),
       ])
 
       if (!statsResponse.ok || !billsResponse.ok) {
@@ -158,7 +431,7 @@ const Dashboard = ({ apiBase, onLogout, onCreateBill, onPrintBill }) => {
     setAllBillsError('')
 
     try {
-      const response = await fetch(`${apiBase}/bills?limit=200`)
+      const response = await authFetch(`${apiBase}/bills?limit=200`)
       if (!response.ok) {
         throw new Error('Billing history is not available')
       }
@@ -176,7 +449,7 @@ const Dashboard = ({ apiBase, onLogout, onCreateBill, onPrintBill }) => {
       try {
         const defaults = getDefaultPathologyTests()
         const fallbackLocal = getPathologyTests()
-        const response = await fetch(`${apiBase}/tests`)
+        const response = await authFetch(`${apiBase}/tests`)
         if (!response.ok) {
           onLoaded(fallbackLocal)
           return
@@ -206,7 +479,7 @@ const Dashboard = ({ apiBase, onLogout, onCreateBill, onPrintBill }) => {
           .filter((t) => t.name)
 
         if (merged.length && serverMap.size < merged.length) {
-          const seedResponse = await fetch(`${apiBase}/tests`, {
+          const seedResponse = await authFetch(`${apiBase}/tests`, {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ tests: merged }),
@@ -233,134 +506,55 @@ const Dashboard = ({ apiBase, onLogout, onCreateBill, onPrintBill }) => {
   }, [loadOverview])
 
   useEffect(() => {
-    if (activeTab === 'overview' || activeTab === 'tests') return
+    if (['overview', ...NON_BILL_TABS].includes(activeTab)) return
     if (allBillsLoading) return
     if (allBills.length) return
     loadAllBills()
   }, [activeTab, allBills.length, allBillsLoading, loadAllBills])
 
+  // Keep the local price list used by Create Bill in sync whenever a test page opens.
   useEffect(() => {
-    if (activeTab !== 'tests') return
-    let isActive = true
-
-    loadTestsFromServer((tests) => {
-      if (!isActive) return
-      setTestsDraft(tests)
-    })
-    setTestsSearch('')
-    setTestsDirty(false)
-    setEditingTestIndex(null)
-    setEditingTestAmount('')
-    setNewTestName('')
-    setNewTestAmount('')
-    setNewTestError('')
-    return () => {
-      isActive = false
-    }
+    if (activeTab === 'tests' || activeTab === 'test-entry') loadTestsFromServer(() => {})
   }, [activeTab, loadTestsFromServer])
 
-  const handleRefresh = () => {
-    loadOverview()
-    if (activeTab !== 'overview' && activeTab !== 'tests') {
-      loadAllBills()
-    }
-    if (activeTab === 'tests') {
-      loadTestsFromServer((tests) => setTestsDraft(tests))
-      setTestsDirty(false)
-      setEditingTestIndex(null)
-      setEditingTestAmount('')
-      setNewTestName('')
-      setNewTestAmount('')
-      setNewTestError('')
-    }
+  const syncTests = () => {
+    setTestsRefreshKey((k) => k + 1)
+    loadTestsFromServer(() => {})
   }
 
-  const navItems = useMemo(
-    () => [
-      { key: 'overview', label: 'Dashboard', icon: FileText },
-      { key: 'history', label: 'Billing History', icon: FileText },
-      { key: 'patients', label: 'Patient List', icon: Users },
-      { key: 'payments', label: 'Payment Report', icon: Banknote },
-      { key: 'tests', label: 'Test Price', icon: TestTube2 },
-    ],
-    [],
-  )
+  const handleRefresh = () => {
+    if (activeTab === 'report' || activeTab === 'dashboard') setReportRefreshKey((k) => k + 1)
+    loadOverview()
+    if (!['overview', ...NON_BILL_TABS].includes(activeTab)) {
+      loadAllBills()
+    }
+    if (activeTab === 'tests' || activeTab === 'test-entry') syncTests()
+  }
+
+  /* ---------------- derived data ---------------- */
 
   const selectedTab = navItems.find((item) => item.key === activeTab) || navItems[0]
 
   const recentFilteredBills = useMemo(() => {
     const query = recentSearch.trim().toLowerCase()
-    if (!query) return recentBills
-
-    return recentBills.filter((bill) => {
-      const patient = bill.patient || {}
-      return [bill.id, patient.name, patient.mobile, patient.refBy]
-        .filter(Boolean)
-        .some((value) => String(value).toLowerCase().includes(query))
-    })
+    return recentBills.filter((bill) => matchesBillQuery(bill, query))
   }, [recentBills, recentSearch])
 
   const dailyRevenue = Array.isArray(stats?.dailyRevenue) ? stats.dailyRevenue : []
   const topTests = Array.isArray(stats?.topTests) ? stats.topTests : []
-  const maxDailyAmount = Math.max(...dailyRevenue.map((day) => Number(day.amount) || 0), 1)
   const maxTestCount = Math.max(...topTests.map((test) => Number(test.count) || 0), 1)
+  const weekTotal = dailyRevenue.reduce((sum, day) => sum + (Number(day.amount) || 0), 0)
+  const weekBills = dailyRevenue.reduce((sum, day) => sum + (Number(day.bills) || 0), 0)
+
+  const totalNet = Number(stats?.totals?.netAmount) || 0
+  const totalReceived = Number(stats?.totals?.receivedAmount) || 0
+  const collectionRate = totalNet > 0 ? Math.round((totalReceived / totalNet) * 100) : 0
+  const totalBillsCount = Number(stats?.totals?.totalBills) || 0
 
   const billHistory = useMemo(() => {
     const query = historySearch.trim().toLowerCase()
-    if (!query) return allBills
-
-    return allBills.filter((bill) => {
-      const patient = bill.patient || {}
-      return [bill.id, patient.name, patient.mobile, patient.refBy]
-        .filter(Boolean)
-        .some((value) => String(value).toLowerCase().includes(query))
-    })
+    return allBills.filter((bill) => matchesBillQuery(bill, query))
   }, [allBills, historySearch])
-
-  const patientRows = useMemo(() => {
-    const map = new Map()
-    for (const bill of allBills) {
-      const patient = bill.patient || {}
-      const key = buildPatientKey(patient)
-      if (!key) continue
-
-      const current = map.get(key) || {
-        key,
-        name: patient.name || 'Unnamed',
-        mobile: patient.mobile || '',
-        refBy: patient.refBy || '',
-        visits: 0,
-        totalNet: 0,
-        totalReceived: 0,
-        totalDues: 0,
-        lastVisitAt: null,
-      }
-
-      current.visits += 1
-      current.totalNet += Number(bill.netAmount) || 0
-      current.totalReceived += Number(bill.receivedAmt) || 0
-      current.totalDues += Number(bill.duesAmt) || 0
-
-      const date = getBillDate(bill)
-      if (date && (!current.lastVisitAt || date > current.lastVisitAt)) {
-        current.lastVisitAt = date
-      }
-
-      map.set(key, current)
-    }
-
-    const query = patientSearch.trim().toLowerCase()
-    const rows = Array.from(map.values())
-    const filtered = query
-      ? rows.filter((row) => [row.name, row.mobile, row.refBy].filter(Boolean).some((value) => String(value).toLowerCase().includes(query)))
-      : rows
-
-    return filtered.sort((a, b) => {
-      const aTime = a.lastVisitAt ? a.lastVisitAt.getTime() : 0
-      const bTime = b.lastVisitAt ? b.lastVisitAt.getTime() : 0
-      return bTime - aTime
-    })
-  }, [allBills, patientSearch])
 
   const todayPatientsCount = useMemo(() => {
     const today = new Date()
@@ -376,19 +570,11 @@ const Dashboard = ({ apiBase, onLogout, onCreateBill, onPrintBill }) => {
 
   const paymentRows = useMemo(() => {
     const query = paymentSearch.trim().toLowerCase()
-    const filteredByText = query
-      ? allBills.filter((bill) => {
-          const patient = bill.patient || {}
-          return [bill.id, patient.name, patient.mobile, patient.refBy]
-            .filter(Boolean)
-            .some((value) => String(value).toLowerCase().includes(query))
-        })
-      : allBills
-
     const start = paymentFrom ? new Date(`${paymentFrom}T00:00:00`) : null
     const end = paymentTo ? new Date(`${paymentTo}T23:59:59`) : null
 
-    return filteredByText.filter((bill) => {
+    return allBills.filter((bill) => {
+      if (!matchesBillQuery(bill, query)) return false
       if (!start && !end) return true
       const date = getBillDate(bill)
       if (!date) return false
@@ -398,998 +584,437 @@ const Dashboard = ({ apiBase, onLogout, onCreateBill, onPrintBill }) => {
     })
   }, [allBills, paymentFrom, paymentSearch, paymentTo])
 
-  const paymentTotals = useMemo(() => {
-    return paymentRows.reduce(
-      (acc, bill) => {
-        acc.net += Number(bill.netAmount) || 0
-        acc.received += Number(bill.receivedAmt) || 0
-        acc.dues += Number(bill.duesAmt) || 0
-        return acc
-      },
-      { net: 0, received: 0, dues: 0 },
-    )
-  }, [paymentRows])
+  const paymentTotals = useMemo(() => sumBills(paymentRows), [paymentRows])
+  const historyTotals = useMemo(() => sumBills(allBills), [allBills])
 
-  const historyTotals = useMemo(() => {
-    return allBills.reduce(
-      (acc, bill) => {
-        acc.net += Number(bill.netAmount) || 0
-        acc.received += Number(bill.receivedAmt) || 0
-        acc.dues += Number(bill.duesAmt) || 0
-        return acc
-      },
-      { net: 0, received: 0, dues: 0 },
-    )
-  }, [allBills])
+  /* ---------------- payment quick ranges ---------------- */
 
-  const filteredTests = useMemo(() => {
-    const query = testsSearch.trim().toLowerCase()
-    const rows = testsDraft.map((test, index) => ({ test, index }))
-    if (!query) return rows
-    return rows.filter((row) => String(row.test?.name || '').toLowerCase().includes(query))
-  }, [testsDraft, testsSearch])
-
-  const handleResetTests = useCallback(async () => {
-    resetPathologyTests()
-    const defaults = getDefaultPathologyTests()
-    setTestsDraft(defaults)
-    setTestsSearch('')
-    setNewTestError('')
-    setTestsDirty(true)
-    try {
-      const response = await fetch(`${apiBase}/tests`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ tests: defaults }),
-      })
-      if (response.ok) {
-        const payload = await response.json()
-        const serverTests = Array.isArray(payload?.tests) ? payload.tests : defaults
-        const saved = savePathologyTests(serverTests)
-        setTestsDraft(saved)
-        setTestsDirty(false)
-      }
-    } catch {
-      setTestsDirty(true)
-    }
-  }, [apiBase])
-
-  const handleAddTest = useCallback(async (event) => {
-    event.preventDefault()
-
-    const name = newTestName.trim()
-    const amount = Math.max(0, Number(newTestAmount) || 0)
-
-    if (!name) {
-      setNewTestError('Enter test name.')
-      return
-    }
-
-    const alreadyExists = testsDraft.some((test) => String(test?.name || '').trim().toLowerCase() === name.toLowerCase())
-    if (alreadyExists) {
-      setNewTestError('This test already exists.')
-      return
-    }
-
-    const next = [...testsDraft, { name, amount }].sort((a, b) => String(a.name).localeCompare(String(b.name)))
-    const localSaved = savePathologyTests(next)
-    setTestsDraft(localSaved)
-    setTestsSearch('')
-    setNewTestName('')
-    setNewTestAmount('')
-    setNewTestError('')
-
-    let savedToDb = false
-    try {
-      const response = await fetch(`${apiBase}/tests`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ tests: [{ name, amount }] }),
-      })
-
-      if (response.ok) {
-        const payload = await response.json()
-        const serverTests = Array.isArray(payload?.tests) ? payload.tests : localSaved
-        setTestsDraft(savePathologyTests(serverTests))
-        savedToDb = true
-      }
-    } catch {
-      savedToDb = false
-    }
-
-    setTestsDirty(!savedToDb)
-    if (!savedToDb) {
-      setNewTestError('Saved locally. Refresh after backend sync is available.')
-    }
-  }, [apiBase, newTestAmount, newTestName, testsDraft])
-
-  const handleEditTestRow = useCallback((index) => {
-    const current = testsDraft[index]
-    setEditingTestIndex(index)
-    setEditingTestAmount(current?.amount === 0 ? '0' : String(current?.amount ?? ''))
-    setTestsDirty(true)
-  }, [testsDraft])
-
-  const handleSaveTestRow = useCallback(async () => {
-    if (editingTestIndex === null) return
-    const current = testsDraft[editingTestIndex]
-    if (!current?.name) return
-
-    const amount = Math.max(0, Number(editingTestAmount) || 0)
-
-    const next = [...testsDraft]
-    next[editingTestIndex] = { ...current, amount }
-    setTestsDraft(next)
-
-    const localSaved = savePathologyTests(next)
-    setTestsDraft(localSaved)
-
-    let savedToDb = false
-    try {
-      const response = await fetch(`${apiBase}/tests`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ tests: [{ name: current.name, amount }] }),
-      })
-      savedToDb = response.ok
-    } catch {
-      savedToDb = false
-    }
-
-    setEditingTestIndex(null)
-    setEditingTestAmount('')
-    setTestsDirty(!savedToDb)
-  }, [apiBase, editingTestAmount, editingTestIndex, testsDraft])
-
-  const handleDeleteTestRow = useCallback(async (index) => {
-    const current = testsDraft[index]
-    const name = String(current?.name || '').trim()
-    if (!name) return
-
-    const shouldDelete = window.confirm(`Delete "${name}" from test prices?`)
-    if (!shouldDelete) return
-
-    const next = testsDraft.filter((_, itemIndex) => itemIndex !== index)
-    const localSaved = savePathologyTests(next)
-    setTestsDraft(localSaved)
-    setEditingTestIndex(null)
-    setEditingTestAmount('')
-
-    let deletedFromDb = false
-    try {
-      const response = await fetch(`${apiBase}/tests/${encodeURIComponent(name)}`, {
-        method: 'DELETE',
-      })
-
-      if (response.ok) {
-        const payload = await response.json()
-        const serverTests = Array.isArray(payload?.tests) ? payload.tests : localSaved
-        setTestsDraft(savePathologyTests(serverTests))
-        deletedFromDb = true
-      }
-    } catch {
-      deletedFromDb = false
-    }
-
-    setTestsDirty(!deletedFromDb)
-    if (!deletedFromDb) {
-      setNewTestError('Deleted locally. Backend delete did not complete.')
-    }
-  }, [apiBase, testsDraft])
+  const quickRanges = useMemo(() => {
+    const today = new Date()
+    const todayStr = toInputDate(today)
+    return [
+      { key: 'today', label: 'Today', from: todayStr, to: todayStr },
+      { key: '7d', label: 'Last 7 days', from: toInputDate(new Date(today.getFullYear(), today.getMonth(), today.getDate() - 6)), to: todayStr },
+      { key: 'month', label: 'This month', from: toInputDate(new Date(today.getFullYear(), today.getMonth(), 1)), to: todayStr },
+      { key: 'all', label: 'All', from: '', to: '' },
+    ]
+  }, [])
 
   const todayStatsPatients = Number(stats?.today?.patientsToday)
   const patientsTodayValue = Number.isFinite(todayStatsPatients) && todayStatsPatients > 0 ? todayStatsPatients : todayPatientsCount
 
-  const SidebarButton = ({ item }) => {
-    const Icon = item.icon
-    const isActive = item.key === activeTab
-    return (
-      <button
-        type="button"
-        onClick={() => setActiveTab(item.key)}
-        className={`flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-sm transition-colors ${
-          isActive
-            ? 'bg-gray-100 font-semibold text-gray-900 dark:bg-slate-800/60 dark:text-slate-100'
-            : 'font-medium text-gray-700 hover:bg-gray-50 dark:text-slate-200 dark:hover:bg-slate-800/40'
-        }`}
-      >
-        <Icon className={`h-4 w-4 ${isActive ? 'text-gray-700 dark:text-slate-200' : 'text-gray-500 dark:text-slate-400'}`} />
-        {item.label}
-      </button>
-    )
-  }
+  const isDataLoading = activeTab === 'overview' ? overviewLoading : NON_BILL_TABS.includes(activeTab) ? false : allBillsLoading
+  const currentError = activeTab === 'overview' ? overviewError : NON_BILL_TABS.includes(activeTab) ? '' : allBillsError
+  const loadedNote = totalBillsCount > allBills.length ? `Showing the latest ${allBills.length} of ${totalBillsCount} bills.` : null
 
-  const isDataLoading = activeTab === 'overview' ? overviewLoading : activeTab === 'tests' ? false : allBillsLoading
-  const currentError = activeTab === 'overview' ? overviewError : activeTab === 'tests' ? '' : allBillsError
+  const todayLabel = new Intl.DateTimeFormat('en-IN', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }).format(new Date())
+
+  /* ---------------- render ---------------- */
 
   return (
-    <div className="min-h-screen bg-gray-100 md:flex md:h-screen md:overflow-hidden dark:bg-slate-950">
-      <aside className="hidden w-64 flex-col border-r border-gray-200 bg-white md:flex md:sticky md:top-0 md:h-screen dark:border-slate-800 dark:bg-slate-900">
-        <div className="px-5 py-4">
-          <div className="text-lg font-bold text-gray-900 dark:text-slate-100">Payment Report</div>
-          <div className="text-sm text-gray-500 dark:text-slate-400">{selectedTab.label}</div>
+    <div className="min-h-screen bg-slate-50 text-slate-900 md:flex md:h-screen md:overflow-hidden print:!block print:!h-auto print:!overflow-visible print:bg-white print:text-black dark:bg-slate-950 dark:text-slate-100">
+      {/* Sidebar (desktop) */}
+      <aside className="hidden print:!hidden w-64 shrink-0 flex-col border-r border-slate-200 bg-white md:flex dark:border-slate-800 dark:bg-slate-900">
+        <div className="flex items-center gap-3 px-5 py-5">
+          <img src={logo} alt="" className="h-10 w-10 rounded-xl bg-white object-contain ring-1 ring-slate-200 dark:ring-slate-700" />
+          <div className="min-w-0">
+            <div className="truncate text-sm font-bold text-slate-900 dark:text-slate-100">{LAB_NAME}</div>
+            <div className={`truncate text-xs ${ui.muted}`}>{user?.name || 'Billing dashboard'}{user?.role ? ` · ${user.role === 'admin' ? 'Admin' : 'Staff'}` : ''}</div>
+          </div>
         </div>
 
-        <div className="px-3">
-          <div className="px-2 pb-2 text-xs font-semibold uppercase tracking-wide text-gray-400 dark:text-slate-500">Options</div>
-          <nav className="space-y-1">
-            <button
-              type="button"
-              onClick={onCreateBill}
-              className="flex w-full items-center gap-3 rounded-lg border border-gray-200 bg-white px-3 py-2 text-left text-sm font-semibold text-gray-900 transition-colors hover:bg-gray-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:hover:bg-slate-800/40"
-            >
-              <Plus className="h-4 w-4 text-gray-600 dark:text-slate-300" />
-              Create Bill
-            </button>
-            {navItems.map((item) => (
-              <SidebarButton key={item.key} item={item} />
-            ))}
-            <button
-              type="button"
-              onClick={handleRefresh}
-              className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-sm font-medium text-gray-700 transition-colors hover:bg-gray-50 dark:text-slate-200 dark:hover:bg-slate-800/40"
-            >
-              <RefreshCw className="h-4 w-4 text-gray-500 dark:text-slate-400" />
-              Refresh
-            </button>
-          </nav>
+        <div className="px-4">
+          <button type="button" onClick={onCreateBill} className={`${ui.btnPrimary} w-full`}>
+            <Plus className="h-4 w-4" />
+            New Bill
+          </button>
         </div>
 
-        <div className="mt-auto border-t border-gray-100 p-4 dark:border-slate-800">
-          <button
-            type="button"
-            onClick={onLogout}
-            className="inline-flex w-full items-center justify-center rounded-lg border border-gray-300 bg-white px-4 py-2 font-medium text-gray-700 transition-colors hover:bg-gray-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800/40"
-          >
-            <LogOut className="mr-2 h-4 w-4" />
+        <nav className="mt-6 min-h-0 flex-1 space-y-1 overflow-y-auto px-3 pb-3">
+          <div className="px-3 pb-2 text-[11px] font-semibold uppercase tracking-wider text-slate-400 dark:text-slate-500">Menu</div>
+          {menu.map((entry) => {
+            if (!entry.children) return <SidebarLink key={entry.key} item={entry} active={entry.key === activeTab} onSelect={selectTab} />
+            const Icon = entry.icon
+            const hasActive = entry.children.some((c) => c.key === activeTab)
+            const isOpen = openGroups.includes(entry.group) || hasActive
+            return (
+              <div key={entry.group}>
+                <button
+                  type="button"
+                  onClick={() => setOpenGroups((g) => (g.includes(entry.group) ? g.filter((x) => x !== entry.group) : [...g, entry.group]))}
+                  aria-expanded={isOpen}
+                  className={`flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-sm transition-colors ${
+                    hasActive ? 'font-semibold text-slate-900 dark:text-slate-100' : 'font-medium text-slate-600 hover:bg-slate-100 hover:text-slate-900 dark:text-slate-300 dark:hover:bg-slate-800'
+                  }`}
+                >
+                  <Icon className="h-4 w-4" />
+                  <span className="flex-1">{entry.label}</span>
+                  <ChevronDown className={`h-4 w-4 text-slate-400 transition-transform ${isOpen ? '' : '-rotate-90'}`} />
+                </button>
+                {isOpen ? (
+                  <div className="ml-5 mt-1 space-y-0.5 border-l border-slate-200 pl-2 dark:border-slate-700">
+                    {entry.children.map((child) => (
+                      <SidebarLink key={child.key} item={child} active={child.key === activeTab} onSelect={selectTab} small />
+                    ))}
+                  </div>
+                ) : null}
+              </div>
+            )
+          })}
+        </nav>
+
+        <div className="space-y-2 border-t border-slate-100 p-4 dark:border-slate-800">
+          <button type="button" onClick={() => setDarkMode((value) => !value)} className={`${ui.btn} w-full`}>
+            {darkMode ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+            {darkMode ? 'Light mode' : 'Dark mode'}
+          </button>
+          <button type="button" onClick={onLogout} className={`${ui.btn} w-full text-rose-600 dark:text-rose-300`}>
+            <LogOut className="h-4 w-4" />
             Logout
           </button>
         </div>
       </aside>
 
-      <div className="flex-1 p-4 md:h-screen md:overflow-y-auto md:p-6">
-        <div className="mx-auto max-w-7xl">
-          <div className="mb-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-            <div>
-              <h1 className="text-3xl font-bold text-gray-900 dark:text-slate-100">{selectedTab.label}</h1>
-              {activeTab === 'overview' ? (
-                <p className="mt-1 text-gray-600 dark:text-slate-300">Revenue, dues, patient count, and recent laboratory bills.</p>
-              ) : null}
+      <div className="flex-1 md:overflow-y-auto print:!overflow-visible">
+        {/* Top bar (mobile) */}
+        <div className="sticky top-0 z-10 print:hidden border-b border-slate-200 bg-white/90 backdrop-blur md:hidden dark:border-slate-800 dark:bg-slate-900/90">
+          <div className="flex items-center justify-between gap-3 px-4 py-3">
+            <div className="flex min-w-0 items-center gap-2">
+              <img src={logo} alt="" className="h-8 w-8 rounded-lg bg-white object-contain ring-1 ring-slate-200 dark:ring-slate-700" />
+              <span className="truncate text-sm font-bold">{LAB_NAME}</span>
             </div>
+            <div className="flex gap-2">
+              <button type="button" onClick={() => setDarkMode((value) => !value)} className={`${ui.btn} px-2.5`} aria-label="Toggle theme">
+                {darkMode ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+              </button>
+              <button type="button" onClick={onLogout} className={`${ui.btn} px-2.5`} aria-label="Logout">
+                <LogOut className="h-4 w-4" />
+              </button>
+            </div>
+          </div>
+          <div className="flex gap-2 overflow-x-auto px-4 pb-3">
+            {navItems.map((item) => (
+              <button
+                key={item.key}
+                type="button"
+                onClick={() => selectTab(item.key)}
+                className={`shrink-0 rounded-full px-3 py-1.5 text-xs font-semibold transition ${
+                  item.key === activeTab
+                    ? 'bg-blue-600 text-white'
+                    : 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300'
+                }`}
+              >
+                {item.label}
+              </button>
+            ))}
+          </div>
+        </div>
 
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-end">
-              <div className="grid grid-cols-1 gap-2 md:hidden">
-                <select
-                  className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm font-medium text-gray-700 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-200 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:focus:border-blue-400 dark:focus:ring-blue-900/40"
-                  value={activeTab}
-                  onChange={(event) => setActiveTab(event.target.value)}
-                >
-                  {navItems.map((item) => (
-                    <option key={item.key} value={item.key}>
-                      {item.label}
-                    </option>
-                  ))}
-                </select>
-                <button
-                  type="button"
-                  onClick={onCreateBill}
-                  className="inline-flex items-center justify-center rounded-lg border border-gray-300 bg-white px-4 py-2 font-medium text-gray-700 transition-colors hover:bg-gray-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800/40"
-                >
-                  <Plus className="mr-2 h-4 w-4" />
-                  Create Bill
-                </button>
-              </div>
-
-              <div className="flex gap-3">
-                <button
-                  type="button"
-                  onClick={() => setDarkMode((value) => !value)}
-                  className="inline-flex items-center rounded-lg border border-gray-300 bg-white px-4 py-2 font-medium text-gray-700 transition-colors hover:bg-gray-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800/40"
-                >
-                  {darkMode ? <Sun className="mr-2 h-4 w-4" /> : <Moon className="mr-2 h-4 w-4" />}
-                  {darkMode ? 'Light' : 'Dark'}
-                </button>
-                <button
-                  type="button"
-                  onClick={onLogout}
-                  className="inline-flex items-center rounded-lg border border-gray-300 bg-white px-4 py-2 font-medium text-gray-700 transition-colors hover:bg-gray-50 md:hidden dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800/40"
-                >
-                  <LogOut className="mr-2 h-4 w-4" />
-                  Logout
-                </button>
-                <button
-                  type="button"
-                  onClick={handleRefresh}
-                  className="inline-flex items-center rounded-lg border border-gray-300 bg-white px-4 py-2 font-medium text-gray-700 transition-colors hover:bg-gray-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800/40"
-                >
-                  <RefreshCw className="mr-2 h-4 w-4" />
-                  Refresh
-                </button>
-              </div>
+        <main className="mx-auto max-w-7xl space-y-6 p-4 md:p-8">
+          {/* Page header */}
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between print:hidden">
+            <div>
+              <p className={`text-sm ${ui.muted}`}>{todayLabel}</p>
+              <h1 className="mt-1 text-2xl font-bold tracking-tight md:text-3xl">{selectedTab.title}</h1>
+              <p className={`mt-1 text-sm ${ui.muted}`}>{selectedTab.subtitle}</p>
+            </div>
+            <div className="flex gap-2">
+              <button type="button" onClick={handleRefresh} className={ui.btn} disabled={isDataLoading}>
+                <RefreshCw className={`h-4 w-4 ${isDataLoading ? 'animate-spin' : ''}`} />
+                Refresh
+              </button>
+              <button type="button" onClick={onCreateBill} className={`${ui.btnPrimary} md:hidden`}>
+                <Plus className="h-4 w-4" />
+                New Bill
+              </button>
             </div>
           </div>
 
           {currentError ? (
-            <div className="mb-6 rounded-xl border border-red-200 bg-red-50 p-4 text-red-700 dark:border-red-900/60 dark:bg-red-950/40 dark:text-red-200">
-              <div className="flex items-center font-semibold">
-                <AlertCircle className="mr-2 h-5 w-5" />
-                {currentError}
+            <div className="flex items-start gap-3 rounded-xl border border-rose-200 bg-rose-50 p-4 text-rose-700 dark:border-rose-900/60 dark:bg-rose-950/40 dark:text-rose-200">
+              <AlertCircle className="mt-0.5 h-5 w-5 shrink-0" />
+              <div>
+                <div className="font-semibold">{currentError}</div>
+                <p className="mt-0.5 text-sm">Start the backend server on port 5000, then press Refresh.</p>
               </div>
-              <p className="mt-1 text-sm text-red-700 dark:text-red-200">Start the backend server on port 5000, then refresh this page.</p>
             </div>
           ) : null}
 
+          {/* ============================ OVERVIEW ============================ */}
           {activeTab === 'overview' ? (
             <>
+              {/* Today banner */}
+              <section className="overflow-hidden rounded-2xl bg-gradient-to-br from-blue-600 to-indigo-700 p-6 text-white shadow-sm">
+                <div className="flex items-center gap-2 text-sm font-medium text-blue-100">
+                  <CalendarDays className="h-4 w-4" />
+                  Today
+                </div>
+                <div className="mt-4 grid grid-cols-2 gap-x-6 gap-y-5 sm:grid-cols-3 lg:grid-cols-5">
+                  {[
+                    { label: 'Bills', value: stats?.today?.billsToday || 0 },
+                    { label: 'Patients', value: patientsTodayValue },
+                    { label: 'Net amount', value: formatCurrency(stats?.today?.revenueToday) },
+                    { label: 'Received', value: formatCurrency(stats?.today?.receivedToday) },
+                    { label: 'Dues', value: formatCurrency(stats?.today?.duesToday), warn: Number(stats?.today?.duesToday) > 0 },
+                  ].map((item) => (
+                    <div key={item.label}>
+                      <div className="text-xs font-medium uppercase tracking-wide text-blue-200">{item.label}</div>
+                      <div className={`mt-1 text-2xl font-bold tabular-nums ${item.warn ? 'text-amber-200' : ''}`}>
+                        {overviewLoading ? '…' : item.value}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </section>
+
+              {/* All-time KPIs */}
               <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
                 <StatCard
-                  icon={FileText}
-                  label="Total Bills"
-                  value={overviewLoading ? '...' : stats?.totals?.totalBills || 0}
-                  tone="bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-200"
-                />
-                <StatCard
-                  icon={Users}
-                  label="Total Patients"
-                  value={overviewLoading ? '...' : stats?.totals?.totalPatients || 0}
-                  tone="bg-emerald-50 text-emerald-700 dark:bg-emerald-900/25 dark:text-emerald-200"
-                />
-                <StatCard
                   icon={IndianRupee}
-                  label="Net Revenue"
-                  value={overviewLoading ? '...' : formatCurrency(stats?.totals?.netAmount)}
-                  tone="bg-amber-50 text-amber-700 dark:bg-amber-900/25 dark:text-amber-200"
+                  label="Net revenue"
+                  value={formatCurrency(totalNet)}
+                  hint="All time"
+                  accent="blue"
+                  loading={overviewLoading}
                 />
                 <StatCard
                   icon={Banknote}
-                  label="Pending Dues"
-                  value={overviewLoading ? '...' : formatCurrency(stats?.totals?.duesAmount)}
-                  tone="bg-rose-50 text-rose-700 dark:bg-rose-900/25 dark:text-rose-200"
+                  label="Collected"
+                  value={formatCurrency(totalReceived)}
+                  hint={`${collectionRate}% of net revenue`}
+                  accent="emerald"
+                  loading={overviewLoading}
+                />
+                <StatCard
+                  icon={Wallet}
+                  label="Pending dues"
+                  value={formatCurrency(stats?.totals?.duesAmount)}
+                  hint="To be collected"
+                  accent="rose"
+                  loading={overviewLoading}
+                />
+                <StatCard
+                  icon={FileText}
+                  label="Bills / Patients"
+                  value={`${totalBillsCount} / ${stats?.totals?.totalPatients || 0}`}
+                  hint="Total bills and unique patients"
+                  accent="indigo"
+                  loading={overviewLoading}
                 />
               </div>
 
-              <div className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-3">
-                <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm lg:col-span-2 dark:border-slate-800 dark:bg-slate-900">
-                  <div className="mb-4 flex items-center justify-between gap-3">
-                    <div>
-                      <h2 className="text-lg font-bold text-gray-900 dark:text-slate-100">Last 7 Days Revenue</h2>
-                      <p className="text-sm text-gray-500 dark:text-slate-400">Daily bill count and net amount</p>
-                    </div>
-                    <CalendarDays className="h-5 w-5 text-gray-400 dark:text-slate-500" />
+              <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
+                <Panel
+                  className="lg:col-span-2"
+                  title="Revenue — last 7 days"
+                  subtitle={`${formatCurrency(weekTotal)} from ${weekBills} bill${weekBills === 1 ? '' : 's'}`}
+                  icon={CalendarDays}
+                >
+                  <div className="p-5">
+                    <RevenueChart rows={dailyRevenue} />
                   </div>
+                </Panel>
 
-                  <div className="space-y-3">
-                    {dailyRevenue.length ? dailyRevenue.map((day) => (
-                      <div key={day.date} className="grid grid-cols-[90px_1fr_110px] items-center gap-3">
-                        <div className="text-sm font-medium text-gray-600 dark:text-slate-300">{day.date}</div>
-                        <div className="h-3 rounded-full bg-gray-100 dark:bg-slate-800">
-                          <div
-                            className="h-3 rounded-full bg-blue-600"
-                            style={{ width: `${Math.max(6, ((Number(day.amount) || 0) / maxDailyAmount) * 100)}%` }}
-                          />
-                        </div>
-                        <div className="text-right text-sm font-semibold text-gray-800 dark:text-slate-200">
-                          {formatCurrency(day.amount)}
-                          <span className="ml-2 text-gray-400 dark:text-slate-500">({day.bills})</span>
-                        </div>
-                      </div>
-                    )) : (
-                      <div className="rounded-lg bg-gray-50 p-6 text-center text-gray-500 dark:bg-slate-800/60 dark:text-slate-400">No revenue data yet.</div>
+                <Panel title="Popular tests" subtitle="Most billed test items" icon={TestTube2}>
+                  <ol className="space-y-4 p-5">
+                    {topTests.length ? (
+                      topTests.map((test, index) => (
+                        <li key={test.name} className="flex items-center gap-3">
+                          <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-slate-100 text-xs font-bold text-slate-600 dark:bg-slate-800 dark:text-slate-300">
+                            {index + 1}
+                          </span>
+                          <div className="min-w-0 flex-1">
+                            <div className="flex justify-between gap-3 text-sm">
+                              <span className="truncate font-medium text-slate-800 dark:text-slate-100" title={test.name}>{test.name}</span>
+                              <span className="shrink-0 tabular-nums text-slate-500 dark:text-slate-400">{test.count}×</span>
+                            </div>
+                            <div className="mt-1.5 h-1.5 rounded-full bg-slate-100 dark:bg-slate-800">
+                              <div
+                                className="h-1.5 rounded-full bg-emerald-500"
+                                style={{ width: `${Math.max(6, ((Number(test.count) || 0) / maxTestCount) * 100)}%` }}
+                              />
+                            </div>
+                          </div>
+                        </li>
+                      ))
+                    ) : (
+                      <li className={`py-8 text-center text-sm ${ui.muted}`}>{overviewLoading ? 'Loading…' : 'No test data yet.'}</li>
                     )}
-                  </div>
-                </div>
-
-                <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900">
-                  <div className="mb-4 flex items-center justify-between gap-3">
-                    <div>
-                      <h2 className="text-lg font-bold text-gray-900 dark:text-slate-100">Popular Tests</h2>
-                      <p className="text-sm text-gray-500 dark:text-slate-400">Most billed test items</p>
-                    </div>
-                    <TestTube2 className="h-5 w-5 text-gray-400 dark:text-slate-500" />
-                  </div>
-
-                  <div className="space-y-3">
-                    {topTests.length ? topTests.map((test) => (
-                      <div key={test.name}>
-                        <div className="mb-1 flex justify-between gap-3 text-sm">
-                          <span className="font-medium text-gray-700 dark:text-slate-200">{test.name}</span>
-                          <span className="text-gray-500 dark:text-slate-400">{test.count}</span>
-                        </div>
-                        <div className="h-2 rounded-full bg-gray-100 dark:bg-slate-800">
-                          <div
-                            className="h-2 rounded-full bg-emerald-500"
-                            style={{ width: `${Math.max(8, ((Number(test.count) || 0) / maxTestCount) * 100)}%` }}
-                          />
-                        </div>
-                      </div>
-                    )) : (
-                      <div className="rounded-lg bg-gray-50 p-6 text-center text-gray-500 dark:bg-slate-800/60 dark:text-slate-400">No test data yet.</div>
-                    )}
-                  </div>
-                </div>
+                  </ol>
+                </Panel>
               </div>
 
-              <div className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-4">
-                <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900">
-                  <div className="flex items-start gap-3">
-                    <div className="rounded-lg bg-indigo-50 p-2 text-indigo-700 dark:bg-indigo-900/25 dark:text-indigo-200">
-                      <Activity className="h-5 w-5" />
-                    </div>
-                    <div className="flex-1">
-                      <div className="flex items-center justify-between gap-3">
-                        <div>
-                          <p className="text-sm text-gray-500 dark:text-slate-400">Bills Today</p>
-                          <p className="text-2xl font-bold text-gray-900 dark:text-slate-100">{overviewLoading ? '...' : stats?.today?.billsToday || 0}</p>
-                        </div>
-                        <div className="text-right">
-                          <p className="text-sm text-gray-500 dark:text-slate-400">Patients Today</p>
-                          <p className="text-xl font-bold text-gray-900 dark:text-slate-100">{overviewLoading ? '...' : patientsTodayValue}</p>
-                        </div>
-                      </div>
-                      <div className="mt-4 grid grid-cols-1 gap-3 border-t border-gray-100 pt-4 dark:border-slate-800">
-                        <div className="flex items-center justify-between text-sm">
-                          <span className="text-gray-500 dark:text-slate-400">Net Today</span>
-                          <span className="font-semibold text-gray-900 dark:text-slate-100">{formatCurrency(stats?.today?.revenueToday)}</span>
-                        </div>
-                        <div className="flex items-center justify-between text-sm">
-                          <span className="text-gray-500 dark:text-slate-400">Received Today</span>
-                          <span className="font-semibold text-gray-900 dark:text-slate-100">{formatCurrency(stats?.today?.receivedToday)}</span>
-                        </div>
-                        <div className="flex items-center justify-between text-sm">
-                          <span className="text-gray-500 dark:text-slate-400">Dues Today</span>
-                          <span className="font-semibold text-rose-700 dark:text-rose-300">{formatCurrency(stats?.today?.duesToday)}</span>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="rounded-xl border border-gray-200 bg-white shadow-sm lg:col-span-3 dark:border-slate-800 dark:bg-slate-900">
-                  <div className="border-b border-gray-200 p-4 dark:border-slate-800">
-                    <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-                      <div>
-                        <h2 className="text-lg font-bold text-gray-900 dark:text-slate-100">Recent Bills</h2>
-                        <p className="text-sm text-gray-500 dark:text-slate-400">Latest saved billing records</p>
-                      </div>
-                      <div className="relative w-full md:w-72">
-                        <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400 dark:text-slate-500" />
-                        <input
-                          className="w-full rounded-lg border border-gray-300 bg-white py-2 pl-9 pr-3 text-gray-900 outline-none transition placeholder:text-gray-400 focus:border-blue-500 focus:ring-2 focus:ring-blue-200 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:placeholder:text-slate-500 dark:focus:border-blue-400 dark:focus:ring-blue-900/40"
-                          placeholder="Search bills"
-                          value={recentSearch}
-                          onChange={(event) => setRecentSearch(event.target.value)}
-                        />
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="overflow-x-auto">
-                    <table className="w-full min-w-[760px] text-left">
-                      <thead className="bg-gray-50 text-sm text-gray-600 dark:bg-slate-800 dark:text-slate-200">
-                        <tr>
-                          <th className="px-4 py-3 font-semibold">Bill ID</th>
-                          <th className="px-4 py-3 font-semibold">Patient</th>
-                          <th className="px-4 py-3 font-semibold">Tests</th>
-                          <th className="px-4 py-3 text-right font-semibold">Net Amount</th>
-                          <th className="px-4 py-3 text-right font-semibold">Received</th>
-                          <th className="px-4 py-3 text-right font-semibold">Dues</th>
-                          <th className="px-4 py-3 font-semibold">Date</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-gray-100 dark:divide-slate-800">
-                        {recentFilteredBills.length ? recentFilteredBills.map((bill) => (
-                          <tr key={bill.id} className="hover:bg-gray-50 dark:hover:bg-slate-800/40">
-                            <td className="px-4 py-3 font-medium text-gray-900 dark:text-slate-100">{bill.id}</td>
-                            <td className="px-4 py-3">
-                              <div className="font-medium text-gray-800 dark:text-slate-100">{bill.patient?.name || 'Unnamed'}</div>
-                              <div className="text-sm text-gray-500 dark:text-slate-400">{bill.patient?.mobile || 'No mobile'}</div>
-                            </td>
-                            <td className="px-4 py-3 text-gray-700 dark:text-slate-200">{Array.isArray(bill.items) ? bill.items.length : 0}</td>
-                            <td className="px-4 py-3 text-right font-semibold text-gray-900 dark:text-slate-100">{formatCurrency(bill.netAmount)}</td>
-                            <td className="px-4 py-3 text-right font-semibold text-gray-900 dark:text-slate-100">{formatCurrency(bill.receivedAmt)}</td>
-                            <td className="px-4 py-3 text-right font-semibold text-rose-700 dark:text-rose-300">{formatCurrency(bill.duesAmt)}</td>
-                            <td className="px-4 py-3 text-sm text-gray-600 dark:text-slate-300">{formatDate(bill.meta?.billingDateTime || bill.createdAt)}</td>
-                          </tr>
-                        )) : (
-                          <tr>
-                            <td colSpan="7" className="px-4 py-8 text-center text-gray-500 dark:text-slate-400">
-                              {overviewLoading ? 'Loading bills...' : 'No bills found.'}
-                            </td>
-                          </tr>
-                        )}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-              </div>
+              <Panel
+                title="Recent bills"
+                subtitle="Latest saved billing records"
+                icon={ReceiptText}
+                actions={
+                  <>
+                    <SearchBox value={recentSearch} onChange={setRecentSearch} placeholder="Search recent bills" />
+                    <button type="button" onClick={() => setActiveTab('history')} className={ui.btn}>
+                      View all
+                    </button>
+                  </>
+                }
+              >
+                <BillsTable bills={recentFilteredBills} loading={overviewLoading} onPrint={onPrintBill} />
+              </Panel>
             </>
           ) : null}
 
+          {/* ============================ HISTORY ============================ */}
           {activeTab === 'history' ? (
-            <div className="space-y-4">
+            <>
               <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
-                <StatCard
-                  icon={FileText}
-                  label="Bills (loaded)"
-                  value={isDataLoading ? '...' : billHistory.length}
-                  tone="bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-200"
-                />
-                <StatCard
-                  icon={IndianRupee}
-                  label="Net Total"
-                  value={isDataLoading ? '...' : formatCurrency(historyTotals.net)}
-                  tone="bg-amber-50 text-amber-700 dark:bg-amber-900/25 dark:text-amber-200"
-                />
-                <StatCard
-                  icon={Banknote}
-                  label="Received Total"
-                  value={isDataLoading ? '...' : formatCurrency(historyTotals.received)}
-                  tone="bg-emerald-50 text-emerald-700 dark:bg-emerald-900/25 dark:text-emerald-200"
-                />
-                <StatCard
-                  icon={Banknote}
-                  label="Dues Total"
-                  value={isDataLoading ? '...' : formatCurrency(historyTotals.dues)}
-                  tone="bg-rose-50 text-rose-700 dark:bg-rose-900/25 dark:text-rose-200"
-                />
+                <StatCard icon={FileText} label="Bills" value={billHistory.length} hint={historySearch ? 'Matching search' : 'Loaded'} accent="blue" loading={isDataLoading} />
+                <StatCard icon={IndianRupee} label="Net total" value={formatCurrency(historyTotals.net)} accent="amber" loading={isDataLoading} />
+                <StatCard icon={Banknote} label="Received" value={formatCurrency(historyTotals.received)} accent="emerald" loading={isDataLoading} />
+                <StatCard icon={Wallet} label="Dues" value={formatCurrency(historyTotals.dues)} accent="rose" loading={isDataLoading} />
               </div>
 
-              <div className="rounded-xl border border-gray-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-900">
-                <div className="border-b border-gray-200 p-4 dark:border-slate-800">
-                  <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-                    <div>
-                      <h2 className="text-lg font-bold text-gray-900 dark:text-slate-100">Billing History</h2>
-                      <p className="text-sm text-gray-500 dark:text-slate-400">Search and review saved bills.</p>
-                    </div>
-                    <div className="relative w-full md:w-80">
-                      <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400 dark:text-slate-500" />
-                      <input
-                        className="w-full rounded-lg border border-gray-300 bg-white py-2 pl-9 pr-3 text-gray-900 outline-none transition placeholder:text-gray-400 focus:border-blue-500 focus:ring-2 focus:ring-blue-200 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:placeholder:text-slate-500 dark:focus:border-blue-400 dark:focus:ring-blue-900/40"
-                        placeholder="Search by bill, patient, mobile, ref by"
-                        value={historySearch}
-                        onChange={(event) => setHistorySearch(event.target.value)}
-                      />
-                    </div>
-                  </div>
-                </div>
-
-                <div className="overflow-x-auto">
-                  <table className="w-full min-w-[1080px] text-left">
-                    <thead className="bg-gray-50 text-sm text-gray-600 dark:bg-slate-800 dark:text-slate-200">
-                      <tr>
-                        <th className="px-4 py-3 font-semibold">Bill ID</th>
-                        <th className="px-4 py-3 font-semibold">Patient</th>
-                        <th className="px-4 py-3 font-semibold">Tests</th>
-                        <th className="px-4 py-3 text-right font-semibold">Net</th>
-                        <th className="px-4 py-3 text-right font-semibold">Received</th>
-                        <th className="px-4 py-3 text-right font-semibold">Dues</th>
-                        <th className="px-4 py-3 font-semibold">Date</th>
-                        <th className="px-4 py-3 text-right font-semibold">Action</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-gray-100 dark:divide-slate-800">
-                      {billHistory.length ? billHistory.map((bill) => (
-                        <tr key={bill.id} className="hover:bg-gray-50 dark:hover:bg-slate-800/40">
-                          <td className="px-4 py-3 font-medium text-gray-900 dark:text-slate-100">{bill.id}</td>
-                          <td className="px-4 py-3">
-                            <div className="font-medium text-gray-800 dark:text-slate-100">{bill.patient?.name || 'Unnamed'}</div>
-                            <div className="text-sm text-gray-500 dark:text-slate-400">{bill.patient?.mobile || 'No mobile'}</div>
-                          </td>
-                          <td className="px-4 py-3 text-gray-700 dark:text-slate-200">{Array.isArray(bill.items) ? bill.items.length : 0}</td>
-                          <td className="px-4 py-3 text-right font-semibold text-gray-900 dark:text-slate-100">{formatCurrency(bill.netAmount)}</td>
-                          <td className="px-4 py-3 text-right font-semibold text-gray-900 dark:text-slate-100">{formatCurrency(bill.receivedAmt)}</td>
-                          <td className="px-4 py-3 text-right font-semibold text-rose-700 dark:text-rose-300">{formatCurrency(bill.duesAmt)}</td>
-                          <td className="px-4 py-3 text-sm text-gray-600 dark:text-slate-300">{formatDate(bill.meta?.billingDateTime || bill.createdAt)}</td>
-                          <td className="px-4 py-3">
-                            <div className="flex justify-end">
-                              <button
-                                type="button"
-                                onClick={() => onPrintBill?.(bill)}
-                                className="inline-flex items-center gap-2 rounded-xl border border-gray-200 bg-white px-4 py-2 text-sm font-semibold text-gray-800 shadow-sm transition hover:border-gray-300 hover:bg-gray-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800/40"
-                              >
-                                <Printer className="h-4 w-4" />
-                                Print
-                              </button>
-                            </div>
-                          </td>
-                        </tr>
-                      )) : (
-                        <tr>
-                          <td colSpan="8" className="px-4 py-10 text-center text-gray-500 dark:text-slate-400">
-                            {isDataLoading ? 'Loading bills...' : 'No bills found.'}
-                          </td>
-                        </tr>
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            </div>
+              <Panel
+                title="All bills"
+                subtitle={loadedNote || 'Search and reprint saved bills.'}
+                icon={ReceiptText}
+                actions={<SearchBox value={historySearch} onChange={setHistorySearch} placeholder="Bill no, patient, mobile, ref by" className="w-full md:w-80" />}
+              >
+                <BillsTable bills={billHistory} loading={isDataLoading} onPrint={onPrintBill} />
+              </Panel>
+            </>
           ) : null}
 
-          {activeTab === 'patients' ? (
-            <div className="space-y-4">
-              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
-                <StatCard
-                  icon={Users}
-                  label="Patients (unique)"
-                  value={isDataLoading ? '...' : patientRows.length}
-                  tone="bg-emerald-50 text-emerald-700 dark:bg-emerald-900/25 dark:text-emerald-200"
-                />
-                <StatCard
-                  icon={Activity}
-                  label="Patients Today"
-                  value={isDataLoading ? '...' : patientsTodayValue}
-                  tone="bg-indigo-50 text-indigo-700 dark:bg-indigo-900/25 dark:text-indigo-200"
-                />
-                <StatCard
-                  icon={IndianRupee}
-                  label="Net Total"
-                  value={isDataLoading ? '...' : formatCurrency(historyTotals.net)}
-                  tone="bg-amber-50 text-amber-700 dark:bg-amber-900/25 dark:text-amber-200"
-                />
-                <StatCard
-                  icon={Banknote}
-                  label="Dues Total"
-                  value={isDataLoading ? '...' : formatCurrency(historyTotals.dues)}
-                  tone="bg-rose-50 text-rose-700 dark:bg-rose-900/25 dark:text-rose-200"
-                />
-              </div>
-
-              <div className="rounded-xl border border-gray-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-900">
-                <div className="border-b border-gray-200 p-4 dark:border-slate-800">
-                  <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-                    <div>
-                      <h2 className="text-lg font-bold text-gray-900 dark:text-slate-100">Patient List</h2>
-                      <p className="text-sm text-gray-500 dark:text-slate-400">Unique patient list from saved bills.</p>
-                    </div>
-                    <div className="relative w-full md:w-80">
-                      <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400 dark:text-slate-500" />
-                      <input
-                        className="w-full rounded-lg border border-gray-300 bg-white py-2 pl-9 pr-3 text-gray-900 outline-none transition placeholder:text-gray-400 focus:border-blue-500 focus:ring-2 focus:ring-blue-200 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:placeholder:text-slate-500 dark:focus:border-blue-400 dark:focus:ring-blue-900/40"
-                        placeholder="Search patient name / mobile / ref"
-                        value={patientSearch}
-                        onChange={(event) => setPatientSearch(event.target.value)}
-                      />
-                    </div>
-                  </div>
-                </div>
-
-                <div className="overflow-x-auto">
-                  <table className="w-full min-w-[1060px] text-left">
-                    <thead className="bg-gray-50 text-sm text-gray-600 dark:bg-slate-800 dark:text-slate-200">
-                      <tr>
-                        <th className="px-4 py-3 font-semibold">Patient</th>
-                        <th className="px-4 py-3 font-semibold">Mobile</th>
-                        <th className="px-4 py-3 font-semibold">Ref By</th>
-                        <th className="px-4 py-3 text-right font-semibold">Visits</th>
-                        <th className="px-4 py-3 text-right font-semibold">Net Total</th>
-                        <th className="px-4 py-3 text-right font-semibold">Received</th>
-                        <th className="px-4 py-3 text-right font-semibold">Dues</th>
-                        <th className="px-4 py-3 font-semibold">Last Visit</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-gray-100 dark:divide-slate-800">
-                      {patientRows.length ? patientRows.map((row) => (
-                        <tr key={row.key} className="hover:bg-gray-50 dark:hover:bg-slate-800/40">
-                          <td className="px-4 py-3 font-medium text-gray-900 dark:text-slate-100">{row.name}</td>
-                          <td className="px-4 py-3 text-gray-700 dark:text-slate-200">{row.mobile || '-'}</td>
-                          <td className="px-4 py-3 text-gray-700 dark:text-slate-200">{row.refBy || '-'}</td>
-                          <td className="px-4 py-3 text-right font-semibold text-gray-900 dark:text-slate-100">{row.visits}</td>
-                          <td className="px-4 py-3 text-right font-semibold text-gray-900 dark:text-slate-100">{formatCurrency(row.totalNet)}</td>
-                          <td className="px-4 py-3 text-right font-semibold text-gray-900 dark:text-slate-100">{formatCurrency(row.totalReceived)}</td>
-                          <td className="px-4 py-3 text-right font-semibold text-rose-700 dark:text-rose-300">{formatCurrency(row.totalDues)}</td>
-                          <td className="px-4 py-3 text-sm text-gray-600 dark:text-slate-300">{row.lastVisitAt ? formatDate(row.lastVisitAt) : 'No date'}</td>
-                        </tr>
-                      )) : (
-                        <tr>
-                          <td colSpan="8" className="px-4 py-10 text-center text-gray-500 dark:text-slate-400">
-                            {isDataLoading ? 'Loading patients...' : 'No patients found.'}
-                          </td>
-                        </tr>
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            </div>
+          {/* ============================ DASHBOARD (new, content to be decided) ============================ */}
+          {activeTab === 'dashboard' ? (
+            <TestRequestList
+              key={reportRefreshKey}
+              onPrintBill={onPrintBill}
+              onEditBill={(bill) => {
+                setEditBill(bill)
+                setActiveTab('patient-reg')
+              }}
+              onResultEntry={(bill) => setResultBillId(bill.id)}
+            />
           ) : null}
 
+          {/* ============================ PATIENT REGISTRATION ============================ */}
+          {activeTab === 'patient-reg' ? (
+            <PatientReg key={editBill?.id || 'new'} editBill={editBill} onPrintBill={onPrintBill} onOpenReport={() => setActiveTab('report')} />
+          ) : null}
+
+          {/* ============================ PATIENTS ============================ */}
+          {activeTab === 'patients' ? <PatientsPage onPrintBill={onPrintBill} onNewBill={onCreateBill} refreshKey={reportRefreshKey} /> : null}
+
+          {/* ============================ USERS (admin) ============================ */}
+          {activeTab === 'users' && isAdmin ? <UsersPage currentUser={user} /> : null}
+
+          {/* ============================ PATIENT REPORT ============================ */}
+          {activeTab === 'receipts' ? <PrintList key="receipt" mode="receipt" onPrintBill={onPrintBill} /> : null}
+          {activeTab === 'lab-report' ? <PrintList key={`lab-${reportRefreshKey}`} mode="lab" onResultEntry={(bill) => setResultBillId(bill.id)} /> : null}
+
+          {/* Result Entry opens full-screen over any page. */}
+          {resultBillId ? (
+            <ResultEntry
+              billId={resultBillId}
+              onClose={() => {
+                setResultBillId(null)
+                setReportRefreshKey((k) => k + 1) // RefNo colour / status refresh
+              }}
+            />
+          ) : null}
+          {activeTab === 'report' ? <PatientReport apiBase={apiBase} onPrintBill={onPrintBill} onCreateBill={onCreateBill} refreshKey={reportRefreshKey} /> : null}
+
+          {/* ============================ PAYMENTS ============================ */}
           {activeTab === 'payments' ? (
-            <div className="space-y-4">
-              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
-                <StatCard
-                  icon={Banknote}
-                  label="Net (filtered)"
-                  value={isDataLoading ? '...' : formatCurrency(paymentTotals.net)}
-                  tone="bg-amber-50 text-amber-700 dark:bg-amber-900/25 dark:text-amber-200"
-                />
-                <StatCard
-                  icon={Banknote}
-                  label="Received (filtered)"
-                  value={isDataLoading ? '...' : formatCurrency(paymentTotals.received)}
-                  tone="bg-emerald-50 text-emerald-700 dark:bg-emerald-900/25 dark:text-emerald-200"
-                />
-                <StatCard
-                  icon={Banknote}
-                  label="Dues (filtered)"
-                  value={isDataLoading ? '...' : formatCurrency(paymentTotals.dues)}
-                  tone="bg-rose-50 text-rose-700 dark:bg-rose-900/25 dark:text-rose-200"
-                />
-                <StatCard
-                  icon={FileText}
-                  label="Bills (filtered)"
-                  value={isDataLoading ? '...' : paymentRows.length}
-                  tone="bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-200"
-                />
-              </div>
-
-              <div className="rounded-xl border border-gray-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-900">
-                <div className="border-b border-gray-200 p-4 dark:border-slate-800">
-                  <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
-                    <div>
-                      <h2 className="text-lg font-bold text-gray-900 dark:text-slate-100">Payment History Report</h2>
-                      <p className="text-sm text-gray-500 dark:text-slate-400">Filter by date range and search bills.</p>
-                    </div>
-                    <div className="flex flex-col gap-3 md:flex-row md:items-center">
-                      <div className="flex items-center gap-2">
-                        <input
-                          type="date"
-                          className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-700 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-200 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:focus:border-blue-400 dark:focus:ring-blue-900/40"
-                          value={paymentFrom}
-                          onChange={(event) => setPaymentFrom(event.target.value)}
-                        />
-                        <span className="text-sm text-gray-400 dark:text-slate-500">to</span>
-                        <input
-                          type="date"
-                          className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-700 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-200 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:focus:border-blue-400 dark:focus:ring-blue-900/40"
-                          value={paymentTo}
-                          onChange={(event) => setPaymentTo(event.target.value)}
-                        />
-                        <button
-                          type="button"
-                          onClick={() => {
-                            const today = new Date()
-                            const yyyy = today.getFullYear()
-                            const mm = String(today.getMonth() + 1).padStart(2, '0')
-                            const dd = String(today.getDate()).padStart(2, '0')
-                            const value = `${yyyy}-${mm}-${dd}`
-                            setPaymentFrom(value)
-                            setPaymentTo(value)
-                          }}
-                          className="inline-flex items-center rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800/40"
-                        >
-                          Today
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setPaymentFrom('')
-                            setPaymentTo('')
-                          }}
-                          className="inline-flex items-center rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800/40"
-                        >
-                          Clear
-                        </button>
-                      </div>
-                      <div className="relative w-full md:w-80">
-                        <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400 dark:text-slate-500" />
-                        <input
-                          className="w-full rounded-lg border border-gray-300 bg-white py-2 pl-9 pr-3 text-gray-900 outline-none transition placeholder:text-gray-400 focus:border-blue-500 focus:ring-2 focus:ring-blue-200 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:placeholder:text-slate-500 dark:focus:border-blue-400 dark:focus:ring-blue-900/40"
-                          placeholder="Search by bill, patient, mobile, ref"
-                          value={paymentSearch}
-                          onChange={(event) => setPaymentSearch(event.target.value)}
-                        />
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="overflow-x-auto">
-                  <table className="w-full min-w-[1040px] text-left">
-                    <thead className="bg-gray-50 text-sm text-gray-600 dark:bg-slate-800 dark:text-slate-200">
-                      <tr>
-                        <th className="px-4 py-3 font-semibold">Bill ID</th>
-                        <th className="px-4 py-3 font-semibold">Patient</th>
-                        <th className="px-4 py-3 text-right font-semibold">Net</th>
-                        <th className="px-4 py-3 text-right font-semibold">Received</th>
-                        <th className="px-4 py-3 text-right font-semibold">Dues</th>
-                        <th className="px-4 py-3 font-semibold">Date</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-gray-100 dark:divide-slate-800">
-                      {paymentRows.length ? paymentRows.map((bill) => (
-                        <tr key={bill.id} className="hover:bg-gray-50 dark:hover:bg-slate-800/40">
-                          <td className="px-4 py-3 font-medium text-gray-900 dark:text-slate-100">{bill.id}</td>
-                          <td className="px-4 py-3">
-                            <div className="font-medium text-gray-800 dark:text-slate-100">{bill.patient?.name || 'Unnamed'}</div>
-                            <div className="text-sm text-gray-500 dark:text-slate-400">{bill.patient?.mobile || 'No mobile'}</div>
-                          </td>
-                          <td className="px-4 py-3 text-right font-semibold text-gray-900 dark:text-slate-100">{formatCurrency(bill.netAmount)}</td>
-                          <td className="px-4 py-3 text-right font-semibold text-gray-900 dark:text-slate-100">{formatCurrency(bill.receivedAmt)}</td>
-                          <td className="px-4 py-3 text-right font-semibold text-rose-700 dark:text-rose-300">{formatCurrency(bill.duesAmt)}</td>
-                          <td className="px-4 py-3 text-sm text-gray-600 dark:text-slate-300">{formatDate(bill.meta?.billingDateTime || bill.createdAt)}</td>
-                        </tr>
-                      )) : (
-                        <tr>
-                          <td colSpan="6" className="px-4 py-10 text-center text-gray-500 dark:text-slate-400">
-                            {isDataLoading ? 'Loading payments...' : 'No payments found.'}
-                          </td>
-                        </tr>
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            </div>
-          ) : null}
-
-          {activeTab === 'tests' ? (
-            <div className="space-y-4">
-              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
-                <StatCard
-                  icon={TestTube2}
-                  label="Total Tests"
-                  value={testsDraft.length}
-                  tone="bg-emerald-50 text-emerald-700 dark:bg-emerald-900/25 dark:text-emerald-200"
-                />
-                <StatCard
-                  icon={FileText}
-                  label="Unsaved Changes"
-                  value={testsDirty ? 'Yes' : 'No'}
-                  tone="bg-amber-50 text-amber-700 dark:bg-amber-900/25 dark:text-amber-200"
-                />
-              </div>
-
-              <div className="rounded-xl border border-gray-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-900">
-                <div className="border-b border-gray-200 p-4 dark:border-slate-800">
-                  <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-                    <div>
-                      <h2 className="text-lg font-bold text-gray-900 dark:text-slate-100">Test Master</h2>
-                      <p className="text-sm text-gray-500 dark:text-slate-400">Add tests and edit prices (these prices show in Create Bill).</p>
-                    </div>
-                    <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-                      <div className="relative w-full sm:w-80">
-                        <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400 dark:text-slate-500" />
-                        <input
-                          className="w-full rounded-lg border border-gray-300 bg-white py-2 pl-9 pr-3 text-gray-900 outline-none transition placeholder:text-gray-400 focus:border-blue-500 focus:ring-2 focus:ring-blue-200 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:placeholder:text-slate-500 dark:focus:border-blue-400 dark:focus:ring-blue-900/40"
-                          placeholder="Search test"
-                          value={testsSearch}
-                          onChange={(event) => setTestsSearch(event.target.value)}
-                        />
-                      </div>
-                      <div className="flex gap-2">
-                        <button
-                          type="button"
-                          onClick={handleResetTests}
-                          className="inline-flex items-center justify-center rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800/40"
-                        >
-                          Reset
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                  <form onSubmit={handleAddTest} className="mt-4 grid gap-3 rounded-lg border border-gray-200 bg-gray-50 p-3 md:grid-cols-[1fr_180px_auto] md:items-start dark:border-slate-800 dark:bg-slate-950/50">
-                    <div>
-                      <label className="sr-only" htmlFor="new-test-name">Test name</label>
-                      <input
-                        id="new-test-name"
-                        className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-gray-900 outline-none transition placeholder:text-gray-400 focus:border-blue-500 focus:ring-2 focus:ring-blue-200 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:placeholder:text-slate-500 dark:focus:border-blue-400 dark:focus:ring-blue-900/40"
-                        placeholder="New test name"
-                        value={newTestName}
-                        onChange={(event) => {
-                          setNewTestName(event.target.value)
-                          setNewTestError('')
+            <>
+              <div className={`${ui.card} flex flex-col gap-4 p-4 lg:flex-row lg:items-center lg:justify-between`}>
+                <div className="flex flex-wrap gap-2">
+                  {quickRanges.map((range) => {
+                    const active = paymentFrom === range.from && paymentTo === range.to
+                    return (
+                      <button
+                        key={range.key}
+                        type="button"
+                        onClick={() => {
+                          setPaymentFrom(range.from)
+                          setPaymentTo(range.to)
                         }}
-                      />
-                      {newTestError ? (
-                        <p className="mt-2 text-sm font-medium text-rose-600 dark:text-rose-300">{newTestError}</p>
-                      ) : null}
-                    </div>
-                    <div>
-                      <label className="sr-only" htmlFor="new-test-amount">Price</label>
-                      <input
-                        id="new-test-amount"
-                        type="number"
-                        inputMode="numeric"
-                        min="0"
-                        className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-right text-gray-900 outline-none transition placeholder:text-gray-400 focus:border-blue-500 focus:ring-2 focus:ring-blue-200 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:placeholder:text-slate-500 dark:focus:border-blue-400 dark:focus:ring-blue-900/40"
-                        placeholder="Price"
-                        value={newTestAmount}
-                        onChange={(event) => setNewTestAmount(event.target.value)}
-                      />
-                    </div>
-                    <button
-                      type="submit"
-                      className="inline-flex h-10 items-center justify-center gap-2 rounded-lg bg-blue-600 px-4 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-700"
-                    >
-                      <Plus className="h-4 w-4" />
-                      Add Test
-                    </button>
-                  </form>
+                        className={`rounded-full px-3.5 py-1.5 text-sm font-medium transition ${
+                          active
+                            ? 'bg-blue-600 text-white'
+                            : 'bg-slate-100 text-slate-700 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700'
+                        }`}
+                      >
+                        {range.label}
+                      </button>
+                    )
+                  })}
                 </div>
-
-                <div className="overflow-x-auto">
-                  <table className="w-full min-w-[820px] text-left">
-                    <thead className="bg-gray-50 text-sm text-gray-600 dark:bg-slate-800 dark:text-slate-200">
-                      <tr>
-                        <th className="px-4 py-3 font-semibold">Test Name</th>
-                        <th className="px-4 py-3 text-right font-semibold">Price (₹)</th>
-                        <th className="px-4 py-3 text-right font-semibold">Action</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-gray-100 dark:divide-slate-800">
-                      {filteredTests.length ? filteredTests.map((row) => (
-                        <tr
-                          key={`${row.index}-${row.test?.name || ''}`}
-                          className="group transition-colors hover:bg-gray-50 dark:hover:bg-slate-800/40"
-                        >
-                          <td className="px-4 py-3 font-medium text-gray-900 dark:text-slate-100">{row.test?.name || '-'}</td>
-                          <td className="px-4 py-3">
-                            <div className="flex justify-end">
-                              <input
-                                type="number"
-                                inputMode="numeric"
-                                min="0"
-                                disabled={editingTestIndex !== row.index}
-                                className={`w-36 appearance-none rounded-xl border px-3 py-2 text-right text-sm outline-none transition ${
-                                  editingTestIndex === row.index
-                                    ? 'border-gray-300 bg-white text-gray-900 shadow-sm focus:border-blue-500 focus:ring-2 focus:ring-blue-200 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100 dark:focus:border-blue-400 dark:focus:ring-blue-900/40'
-                                    : 'border-transparent bg-transparent text-gray-900 group-hover:border-gray-200 dark:text-slate-100 dark:group-hover:border-slate-700'
-                                }`}
-                                value={editingTestIndex === row.index ? editingTestAmount : String(row.test?.amount ?? '')}
-                                onChange={(event) => setEditingTestAmount(event.target.value)}
-                              />
-                            </div>
-                          </td>
-                          <td className="px-4 py-3">
-                            <div className="flex justify-end gap-2">
-                              {editingTestIndex === row.index ? (
-                                <button
-                                  type="button"
-                                  onClick={handleSaveTestRow}
-                                  className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-700"
-                                >
-                                  <Check className="h-4 w-4" />
-                                  Save
-                                </button>
-                              ) : (
-                                <>
-                                  <button
-                                    type="button"
-                                    onClick={() => handleEditTestRow(row.index)}
-                                    className="inline-flex items-center gap-2 rounded-xl border border-gray-200 bg-white px-4 py-2 text-sm font-semibold text-gray-800 shadow-sm transition hover:border-gray-300 hover:bg-gray-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800/40"
-                                  >
-                                    <Pencil className="h-4 w-4" />
-                                    Edit
-                                  </button>
-                                  <button
-                                    type="button"
-                                    onClick={() => handleDeleteTestRow(row.index)}
-                                    className="inline-flex items-center gap-2 rounded-xl border border-rose-200 bg-white px-4 py-2 text-sm font-semibold text-rose-700 shadow-sm transition hover:border-rose-300 hover:bg-rose-50 dark:border-rose-900/60 dark:bg-slate-900 dark:text-rose-300 dark:hover:bg-rose-950/30"
-                                  >
-                                    <Trash2 className="h-4 w-4" />
-                                    Delete
-                                  </button>
-                                </>
-                              )}
-                            </div>
-                          </td>
-                        </tr>
-                      )) : (
-                        <tr>
-                          <td colSpan="3" className="px-4 py-10 text-center text-gray-500 dark:text-slate-400">
-                            No tests found.
-                          </td>
-                        </tr>
-                      )}
-                    </tbody>
-                  </table>
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                  <div className="flex items-center gap-2">
+                    <input type="date" aria-label="From date" className={`${ui.input} w-auto`} value={paymentFrom} onChange={(event) => setPaymentFrom(event.target.value)} />
+                    <span className={`text-sm ${ui.muted}`}>to</span>
+                    <input type="date" aria-label="To date" className={`${ui.input} w-auto`} value={paymentTo} onChange={(event) => setPaymentTo(event.target.value)} />
+                  </div>
+                  <SearchBox value={paymentSearch} onChange={setPaymentSearch} placeholder="Bill no, patient, mobile" className="w-full sm:w-64" />
                 </div>
               </div>
-            </div>
+
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+                <StatCard icon={FileText} label="Bills" value={paymentRows.length} hint="In selected range" accent="blue" loading={isDataLoading} />
+                <StatCard icon={IndianRupee} label="Net amount" value={formatCurrency(paymentTotals.net)} accent="amber" loading={isDataLoading} />
+                <StatCard
+                  icon={Banknote}
+                  label="Received"
+                  value={formatCurrency(paymentTotals.received)}
+                  hint={paymentTotals.net > 0 ? `${Math.round((paymentTotals.received / paymentTotals.net) * 100)}% collected` : undefined}
+                  accent="emerald"
+                  loading={isDataLoading}
+                />
+                <StatCard icon={Wallet} label="Dues" value={formatCurrency(paymentTotals.dues)} accent="rose" loading={isDataLoading} />
+              </div>
+
+              <Panel title="Payment history" subtitle={loadedNote || 'Bills in the selected date range.'} icon={Wallet}>
+                <BillsTable bills={paymentRows} loading={isDataLoading} showTests={false} emptyText="No payments in this range." />
+              </Panel>
+            </>
           ) : null}
-        </div>
+
+          {/* ============================ TEST ENTRY / TEST LIST ============================ */}
+          {activeTab === 'test-entry' ? (
+            <TestEntry
+              key={editTestId || 'new'}
+              editId={editTestId}
+              onSaved={() => syncTests()}
+              onNew={() => setEditTestId(null)}
+              onOpenList={() => setActiveTab('tests')}
+              onDeleted={() => {
+                setEditTestId(null)
+                syncTests()
+                setActiveTab('tests')
+              }}
+            />
+          ) : null}
+          {activeTab === 'tests' ? (
+            <TestList
+              refreshKey={testsRefreshKey}
+              onOpen={(id) => {
+                setEditTestId(id)
+                setActiveTab('test-entry')
+              }}
+              onNew={() => {
+                setEditTestId(null)
+                setActiveTab('test-entry')
+              }}
+            />
+          ) : null}
+
+          {/* ============================ TEST PROFILE ============================ */}
+          {activeTab === 'test-profile' ? <TestProfile /> : null}
+
+          {/* ============================ PROFILE SETTING ============================ */}
+          {activeTab === 'profile-setting' ? <ProfileSetting onOpenProfiles={() => setActiveTab('test-profile')} /> : null}
+
+        </main>
       </div>
     </div>
   )
